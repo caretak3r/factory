@@ -1,0 +1,45 @@
+name = "agentx-factory"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[durable_objects]
+bindings = [
+  { name = "SUPERVISOR", class_name = "Supervisor" },
+  { name = "AGENT", class_name = "Agent" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Supervisor", "Agent"]
+
+[[queues.producers]]
+binding = "DISPATCH_QUEUE"
+queue = "agentx-dispatch"
+
+[[queues.producers]]
+binding = "RESULT_QUEUE"
+queue = "agentx-results"
+
+[[queues.consumers]]
+queue = "agentx-dispatch"
+max_batch_size = 1
+max_retries = 3
+dead_letter_queue = "agentx-dlq"
+
+[[queues.consumers]]
+queue = "agentx-results"
+max_batch_size = 10
+max_retries = 3
+
+[[queues.consumers]]
+queue = "agentx-dlq"
+max_batch_size = 1
+
+[[kv_namespaces]]
+binding = "PIPELINE_KV"
+id = "placeholder"
+
+[[r2_buckets]]
+binding = "ARTIFACT_STORE"
+bucket_name = "agentx-artifacts"
