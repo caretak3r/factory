@@ -1,0 +1,72 @@
+name: code-review
+version: 1
+description: Parallel multi-perspective code review with synthesis
+
+model_defaults:
+  planning: claude-opus-4-6
+  execution: claude-sonnet-4-6
+  classification: claude-haiku-4-5-20251001
+
+agents:
+  - id: security
+    role: >
+      Security engineer. Review the diff for vulnerabilities:
+      injection, auth bypass, data exposure, dependency risks.
+      Output structured findings with severity ratings.
+    model: execution
+    tools: []
+    memory:
+      max_tokens: 8000
+
+  - id: performance
+    role: >
+      Performance engineer. Review the diff for bottlenecks:
+      N+1 queries, unbounded loops, memory leaks, missing indexes.
+      Output structured findings with impact estimates.
+    model: execution
+    tools: []
+    memory:
+      max_tokens: 8000
+
+  - id: correctness
+    role: >
+      Senior engineer. Review the diff for logic errors:
+      edge cases, race conditions, incorrect assumptions,
+      missing error handling. Output structured findings.
+    model: planning
+    tools: []
+    memory:
+      max_tokens: 16000
+
+  - id: synthesizer
+    role: >
+      Merge all review findings into a single report.
+      Deduplicate, prioritize by severity, add overall assessment.
+    model: execution
+    tools: []
+    memory:
+      max_tokens: 4000
+
+pipeline:
+  - step: review
+    agents: [security, performance, correctness]
+    mode: parallel
+
+  - step: quality-gate
+    type: gate
+    condition: all_agents_completed
+    on_fail: retry(max=1)
+
+  - step: synthesize
+    agent: synthesizer
+    inputs: [security, performance, correctness]
+
+recovery:
+  default: "retry(max=2, backoff=exponential)"
+  fallback: "degrade(skip_failed_agent=true)"
+  escalation: "human(channel=notification)"
+
+budget:
+  max_tokens: 100000
+  max_duration_ms: 300000
+  max_retries: 6
