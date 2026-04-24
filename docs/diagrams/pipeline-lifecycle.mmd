@@ -1,0 +1,44 @@
+---
+title: AgentX Pipeline Lifecycle — State Machine
+---
+stateDiagram-v2
+    [*] --> Submitted: Client submits pipeline run
+
+    Submitted --> Validating: Supervisor created
+    Validating --> Planning: YAML valid, DAG built
+    Validating --> Failed: Invalid YAML / missing agents
+
+    Planning --> Dispatching: DAG resolved, agents allocated
+    Note right of Planning: Supervisor creates Agent DOs<br/>Assigns roles from YAML<br/>Sets memory budgets
+
+    Dispatching --> Running: Tasks pushed to Queue
+    Note right of Dispatching: Parallel agents dispatched<br/>simultaneously for parallel steps
+
+    Running --> GateCheck: Agent(s) completed
+    Note right of Running: Each agent works independently<br/>LLM calls, tool use, R2 writes
+
+    GateCheck --> Dispatching: Gate PASS, more steps remain
+    GateCheck --> Recovery: Gate FAIL
+    GateCheck --> Completing: Gate PASS, final step done
+
+    state Recovery {
+        [*] --> Retrying
+        Retrying --> RetryGate: Agent re-executed
+        RetryGate --> [*]: Retry PASS
+        RetryGate --> Fallback: Retry FAIL
+        Fallback --> FallbackGate: Fallback agent ran
+        FallbackGate --> [*]: Fallback PASS
+        FallbackGate --> HumanEscalation: Fallback FAIL
+        HumanEscalation --> [*]: Human resolved
+    end
+
+    Recovery --> Dispatching: Recovery succeeded, resume pipeline
+    Recovery --> Failed: Recovery exhausted, pipeline aborted
+
+    Completing --> Completed: Output written to R2
+    Note right of Completing: Supervisor collects all artifacts<br/>Writes final output<br/>Records metrics
+
+    Completed --> [*]
+    Failed --> [*]
+
+    Note right of Failed: Full audit trail preserved<br/>in Supervisor DO storage

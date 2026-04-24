@@ -1,0 +1,50 @@
+---
+title: AgentX Handoff Protocol — Envelope + R2 Data Plane
+---
+sequenceDiagram
+    participant S as Supervisor DO
+    participant Q1 as Dispatch Queue
+    participant A1 as Agent DO (Researcher)
+    participant R2 as R2 Bucket
+    participant Q2 as Result Queue
+    participant G as Gate Evaluator
+    participant A2 as Agent DO (Writer)
+
+    Note over S: Pipeline run starts<br/>Supervisor reads DAG from KV
+
+    S->>Q1: Dispatch task envelope<br/>{agent: researcher, input_ref: r2://...}
+    Q1->>A1: Deliver task message
+
+    Note over A1: Agent pulls input from R2<br/>Executes LLM call<br/>Owns its own SQLite memory
+
+    A1->>R2: Write output artifact<br/>r2://run-123/researcher/output.json
+    A1->>Q2: Completion envelope<br/>{artifact_ref: r2://..., tokens: 4200, model: sonnet}
+
+    Q2->>S: Deliver completion event
+    S->>G: Evaluate gate conditions
+
+    alt Gate passes
+        G->>S: PASS: all checks clear
+        Note over S: Update DAG state<br/>Dispatch next agent
+
+        S->>Q1: Dispatch to writer<br/>{agent: writer, input_refs: [r2://researcher/...]}
+        Q1->>A2: Deliver task message
+        A2->>R2: Pull upstream artifact(s)
+
+        Note over A2: Agent reads parent artifacts<br/>via context_window.parent_refs<br/>Executes LLM call
+
+        A2->>R2: Write final output
+        A2->>Q2: Completion envelope
+        Q2->>S: Pipeline complete
+    else Gate fails
+        G->>S: FAIL: hallucination detected
+        Note over S: Recovery engine activates
+
+        alt Retry available
+            S->>Q1: Re-dispatch to researcher<br/>with adjusted prompt
+        else Retries exhausted
+            S->>Q1: Dispatch to fallback agent
+        else No fallback
+            S-->>S: Escalate to human<br/>via notification
+        end
+    end

@@ -1,0 +1,75 @@
+---
+title: AgentX Execution Model — Supervisor + Agent DOs
+---
+graph TB
+    Client["Client Request<br/>(API / CLI / Dashboard)"]
+    Worker["Cloudflare Worker<br/>(Hono API Router)"]
+    KV[("KV Store<br/>Pipeline YAML<br/>Gate Thresholds<br/>Runtime Config")]
+
+    subgraph SupervisorLayer ["Supervisor Durable Object"]
+        direction TB
+        SM["State Machine<br/>DAG Tracker"]
+        GE["Gate Evaluator"]
+        RE["Recovery Engine"]
+        SM --> GE
+        GE --> RE
+    end
+
+    subgraph AgentSwarm ["Agent Durable Objects"]
+        direction LR
+        A1["Agent DO 1<br/>Security Reviewer<br/>──────────<br/>SQLite Memory"]
+        A2["Agent DO 2<br/>Perf Reviewer<br/>──────────<br/>SQLite Memory"]
+        A3["Agent DO 3<br/>Correctness Reviewer<br/>──────────<br/>SQLite Memory"]
+        A4["Agent DO 4<br/>Synthesizer<br/>──────────<br/>SQLite Memory"]
+    end
+
+    Q1{{"Dispatch Queue"}}
+    Q2{{"Result Queue"}}
+    R2[("R2 Bucket<br/>Artifacts<br/>Outputs<br/>Logs")]
+    Anthropic["Anthropic API<br/>Opus / Sonnet / Haiku"]
+
+    Client -->|"POST /pipelines/run"| Worker
+    Worker -->|"Fetch YAML"| KV
+    Worker -->|"Create pipeline run"| SM
+
+    SM -->|"Dispatch tasks"| Q1
+    Q1 -->|"Task message"| A1
+    Q1 -->|"Task message"| A2
+    Q1 -->|"Task message"| A3
+
+    A1 -->|"LLM call"| Anthropic
+    A2 -->|"LLM call"| Anthropic
+    A3 -->|"LLM call"| Anthropic
+
+    A1 -->|"Write artifact"| R2
+    A2 -->|"Write artifact"| R2
+    A3 -->|"Write artifact"| R2
+
+    A1 -->|"Envelope + R2 ref"| Q2
+    A2 -->|"Envelope + R2 ref"| Q2
+    A3 -->|"Envelope + R2 ref"| Q2
+
+    Q2 -->|"Completion event"| SM
+    SM -->|"Evaluate gates"| GE
+    GE -->|"Pass: dispatch next"| Q1
+    Q1 -->|"Task message"| A4
+    A4 -->|"LLM call"| Anthropic
+    A4 -->|"Final output"| R2
+
+    GE -->|"Fail: trigger recovery"| RE
+    RE -->|"Retry / fallback"| Q1
+    RE -->|"Escalate"| Client
+
+    classDef worker fill:#f97316,stroke:#0f172a,color:#fff,stroke-width:2px
+    classDef supervisor fill:#22d3ee,stroke:#0f172a,color:#0f172a,stroke-width:2px
+    classDef agent fill:#8b5cf6,stroke:#0f172a,color:#fff,stroke-width:2px
+    classDef storage fill:#64748b,stroke:#0f172a,color:#fff,stroke-width:2px
+    classDef queue fill:#f59e0b,stroke:#0f172a,color:#fff,stroke-width:2px
+    classDef external fill:#10b981,stroke:#0f172a,color:#fff,stroke-width:2px
+
+    class Worker worker
+    class SM,GE,RE supervisor
+    class A1,A2,A3,A4 agent
+    class KV,R2 storage
+    class Q1,Q2 queue
+    class Client,Anthropic external

@@ -1,0 +1,65 @@
+---
+title: AgentX Gates and Circuit Breakers — Failure Detection + Recovery
+---
+flowchart TB
+    subgraph Triggers ["Detection Triggers"]
+        T1["Token budget exceeded"]
+        T2["Hallucination flag<br/>(confidence < threshold)"]
+        T3["Agent timeout<br/>(no response in N seconds)"]
+        T4["Queue overflow<br/>(backpressure signal)"]
+        T5["Schema validation failure<br/>(output doesn't match contract)"]
+    end
+
+    subgraph GateEval ["Gate Evaluator (Supervisor)"]
+        direction TB
+        Receive["Receive completion envelope"]
+        Check["Evaluate gate conditions<br/>from YAML pipeline definition"]
+        Score["Risk score calculation<br/>token_cost + latency + confidence"]
+    end
+
+    subgraph CircuitBreaker ["Circuit Breaker States"]
+        direction LR
+        Closed["CLOSED<br/>Normal operation<br/>Errors below threshold"]
+        HalfOpen["HALF-OPEN<br/>Probe with single request<br/>After cooldown period"]
+        Open["OPEN<br/>Fast-fail all requests<br/>Skip agent entirely"]
+
+        Closed -->|"Error rate > threshold"| Open
+        Open -->|"Cooldown elapsed"| HalfOpen
+        HalfOpen -->|"Probe succeeds"| Closed
+        HalfOpen -->|"Probe fails"| Open
+    end
+
+    subgraph Recovery ["Recovery Actions"]
+        direction TB
+        R1["Retry with backoff<br/>Same agent, adjusted params"]
+        R2["Fallback agent<br/>Alternate DO, same role"]
+        R3["Graceful degradation<br/>Skip failed branch,<br/>continue with partial results"]
+        R4["Human escalation<br/>Notification + pause pipeline"]
+
+        R1 -->|"Max retries hit"| R2
+        R2 -->|"Fallback fails"| R3
+        R3 -->|"Critical path"| R4
+    end
+
+    T1 & T2 & T3 & T4 & T5 --> Receive
+    Receive --> Check
+    Check -->|"All pass"| PassThrough["PASS<br/>Dispatch next step"]
+    Check -->|"Soft fail"| Score
+    Check -->|"Hard fail"| Open
+
+    Score -->|"Risk acceptable"| PassThrough
+    Score -->|"Risk too high"| R1
+
+    Open -->|"Fast-fail"| R3
+
+    classDef trigger fill:#ef4444,stroke:#0f172a,color:#fff,stroke-width:2px
+    classDef gate fill:#f59e0b,stroke:#0f172a,color:#fff,stroke-width:2px
+    classDef breaker fill:#8b5cf6,stroke:#0f172a,color:#fff,stroke-width:2px
+    classDef recovery fill:#10b981,stroke:#0f172a,color:#fff,stroke-width:2px
+    classDef pass fill:#22d3ee,stroke:#0f172a,color:#0f172a,stroke-width:2px
+
+    class T1,T2,T3,T4,T5 trigger
+    class Receive,Check,Score gate
+    class Closed,HalfOpen,Open breaker
+    class R1,R2,R3,R4 recovery
+    class PassThrough pass
