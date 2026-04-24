@@ -1,0 +1,76 @@
+name: tech-evaluation
+version: 1
+description: Evaluate a technology from three angles, then synthesize
+
+model_defaults:
+  planning: claude-opus-4-6
+  execution: claude-sonnet-4-6
+  classification: claude-haiku-4-5-20251001
+
+agents:
+  - id: advocate
+    role: >
+      You are a technology advocate. Make the strongest possible case
+      FOR adopting this technology. Cover DX, ecosystem, performance,
+      hiring pool, and momentum. Be specific with evidence.
+    model: execution
+    tools: []
+    memory:
+      max_tokens: 8000
+
+  - id: critic
+    role: >
+      You are a skeptical senior engineer. Find every reason this
+      technology could fail, cause pain, or be the wrong choice.
+      Cover lock-in, immaturity, migration cost, edge cases,
+      and what happens when the hype dies.
+    model: execution
+    tools: []
+    memory:
+      max_tokens: 8000
+
+  - id: pragmatist
+    role: >
+      You are a pragmatic tech lead. Compare this technology to
+      the top 2 alternatives. Build a decision matrix with
+      weighted criteria. No cheerleading, no doom — just tradeoffs.
+    model: planning
+    tools: []
+    memory:
+      max_tokens: 12000
+
+  - id: synthesizer
+    role: >
+      You received three analyst reports: an advocate, a critic,
+      and a pragmatist. Produce a 1-page executive decision memo.
+      Start with a clear YES/NO/CONDITIONAL recommendation.
+      List the top 3 reasons for your call, the biggest risk,
+      and one thing the team should prototype before committing.
+    model: planning
+    tools: []
+    memory:
+      max_tokens: 6000
+
+pipeline:
+  - step: analyze
+    agents: [advocate, critic, pragmatist]
+    mode: parallel
+
+  - step: quality-check
+    type: gate
+    condition: all_agents_completed
+    on_fail: retry(max=1)
+
+  - step: decide
+    agent: synthesizer
+    inputs: [advocate, critic, pragmatist]
+
+recovery:
+  default: "retry(max=2, backoff=exponential)"
+  fallback: "degrade(skip_failed_agent=true)"
+  escalation: "human(channel=notification)"
+
+budget:
+  max_tokens: 80000
+  max_duration_ms: 120000
+  max_retries: 4
