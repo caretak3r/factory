@@ -1,23 +1,7 @@
-import { defineWorkersConfig } from "@cloudflare/vitest-pool-workers/config";
+import { defineConfig } from "vitest/config";
 
-export default defineWorkersConfig({
+export default defineConfig({
   test: {
-    poolOptions: {
-      workers: {
-        wrangler: { configPath: "./wrangler.toml" },
-        miniflare: {
-          kvNamespaces: ["PIPELINE_KV"],
-          r2Buckets: ["ARTIFACT_STORE"],
-          queueProducers: {
-            DISPATCH_QUEUE: "agentx-dispatch",
-            RESULT_QUEUE: "agentx-results",
-          },
-          durableObjects: {
-            SUPERVISOR: "Supervisor",
-            AGENT: "Agent",
-          },
-        },
-      },
-    },
+    include: ["test/**/*.test.ts"],
   },
 });

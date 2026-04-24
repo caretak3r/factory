@@ -2,7 +2,150 @@
   "goal": "Build AgentX Factory Phase 1 Core Engine — YAML pipeline in, synthesized LLM output out, deployed to Cloudflare Workers",
   "status": "planning",
   "createdAt": "2026-04-23T21:30:00Z",
-  "milestones": [],
+  "milestones": [
+    {
+      "id": "M1",
+      "title": "Foundation",
+      "status": "pending",
+      "validationCriteria": "npx tsc --noEmit passes. Wrangler compiles. Vitest initializes.",
+      "features": [
+        {
+          "id": "FEAT-001",
+          "title": "Project Scaffolding",
+          "description": "Initialize package.json, tsconfig.json, wrangler.toml, vitest.config.ts, stub index.ts. Install all dependencies: hono, zod, yaml, @anthropic-ai/sdk, wrangler, vitest, @cloudflare/vitest-pool-workers, @cloudflare/workers-types.",
+          "dependencies": [],
+          "complexity": "low",
+          "status": "pending",
+          "commitSha": null,
+          "reviewStatus": null
+        },
+        {
+          "id": "FEAT-002",
+          "title": "Core Types",
+          "description": "Define all shared TypeScript types in src/types.ts: Env bindings, HandoffEnvelope, AgentRef, PipelineConfig (ModelDefaults, AgentConfig, PipelineStep, RecoveryConfig, BudgetConfig), DAG types (DagState, DagNode, AgentStatus, RunStatus), PipelineEvent, DispatchMessage, ResultMessage.",
+          "dependencies": ["FEAT-001"],
+          "complexity": "low",
+          "status": "pending",
+          "commitSha": null,
+          "reviewStatus": null
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "title": "Pure Logic Modules",
+      "status": "pending",
+      "validationCriteria": "All 15 unit tests pass (npx vitest run). No type errors.",
+      "features": [
+        {
+          "id": "FEAT-003",
+          "title": "Envelope Helpers",
+          "description": "Create src/envelope.ts with artifactKey(), inputKey(), createDispatchEnvelope(), createResultEnvelope(). TDD with 3 unit tests in test/envelope.test.ts.",
+          "dependencies": ["FEAT-002"],
+          "complexity": "low",
+          "status": "pending",
+          "commitSha": null,
+          "reviewStatus": null
+        },
+        {
+          "id": "FEAT-004",
+          "title": "YAML Schema Validation",
+          "description": "Create src/schema.ts with Zod schemas for PipelineConfig, parsePipelineYaml(), validatePipelineConfig(). Create pipelines/code-review.yaml. TDD with 4 unit tests in test/schema.test.ts.",
+          "dependencies": ["FEAT-002"],
+          "complexity": "medium",
+          "status": "pending",
+          "commitSha": null,
+          "reviewStatus": null
+        },
+        {
+          "id": "FEAT-005",
+          "title": "Gate Evaluator",
+          "description": "Create src/gate.ts with evaluateGate() supporting all_agents_completed and token_budget conditions. TDD with 4 unit tests in test/gate.test.ts.",
+          "dependencies": ["FEAT-002"],
+          "complexity": "low",
+          "status": "pending",
+          "commitSha": null,
+          "reviewStatus": null
+        },
+        {
+          "id": "FEAT-006",
+          "title": "Anthropic Client Wrapper",
+          "description": "Create src/anthropic.ts with resolveModel(), buildPrompt(), callAnthropic(). Thin wrapper around @anthropic-ai/sdk. TDD with 4 unit tests in test/anthropic.test.ts.",
+          "dependencies": ["FEAT-002"],
+          "complexity": "low",
+          "status": "pending",
+          "commitSha": null,
+          "reviewStatus": null
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "title": "Durable Objects",
+      "status": "pending",
+      "validationCriteria": "Agent DO + Supervisor DO integration tests pass via miniflare. DOs initialize SQLite, handle tasks, manage DAG state.",
+      "features": [
+        {
+          "id": "FEAT-007",
+          "title": "Agent Durable Object",
+          "description": "Create src/agent.ts — Agent DO class extending DurableObject. SQLite schema for config + history. handleTask(): pull R2 input, call Anthropic, write R2 output, send result envelope to Result Queue. getStatus() RPC method. 2 integration tests.",
+          "dependencies": ["FEAT-003", "FEAT-006"],
+          "complexity": "high",
+          "status": "pending",
+          "commitSha": null,
+          "reviewStatus": null
+        },
+        {
+          "id": "FEAT-008",
+          "title": "Supervisor Durable Object",
+          "description": "Create src/supervisor.ts — Supervisor DO class extending DurableObject. SQLite schema for dag_state + events. initializeRun(): parse YAML, build DAG, create Agent DO IDs, write input to R2, dispatch first step via Queue. handleAgentCompletion(): update DAG, evaluate gates, dispatch next step or complete. getState() and getEvents() RPC methods. 2 integration tests.",
+          "dependencies": ["FEAT-003", "FEAT-004", "FEAT-005"],
+          "complexity": "high",
+          "status": "pending",
+          "commitSha": null,
+          "reviewStatus": null
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "title": "Integration & Deploy",
+      "status": "pending",
+      "validationCriteria": "Full E2E test suite passes. wrangler deploy --dry-run succeeds. Production smoke test on live URL.",
+      "features": [
+        {
+          "id": "FEAT-009",
+          "title": "Hono API Router + Queue Consumers",
+          "description": "Replace stub src/index.ts with full Hono Worker: pipeline CRUD (POST/GET/DELETE /api/pipelines), run management (POST/GET /api/runs), artifact retrieval, health check. Queue consumer: route dispatch messages to Agent DOs, route result messages to Supervisor DOs. Export Agent + Supervisor classes.",
+          "dependencies": ["FEAT-007", "FEAT-008"],
+          "complexity": "medium",
+          "status": "pending",
+          "commitSha": null,
+          "reviewStatus": null
+        },
+        {
+          "id": "FEAT-010",
+          "title": "E2E Integration Tests",
+          "description": "Create test/e2e.test.ts: health check, pipeline CRUD, run creation + DAG state verification, run listing, reject invalid YAML, reject nonexistent pipeline. 6 integration tests exercising the full Worker via SELF.fetch().",
+          "dependencies": ["FEAT-009"],
+          "complexity": "medium",
+          "status": "pending",
+          "commitSha": null,
+          "reviewStatus": null
+        },
+        {
+          "id": "FEAT-011",
+          "title": "Deploy Verification",
+          "description": "Run full test suite + type check. Test wrangler dev locally. Create CF resources (KV namespace, R2 bucket, Queues). Set ANTHROPIC_API_KEY secret. wrangler deploy. Smoke test production endpoints.",
+          "dependencies": ["FEAT-010"],
+          "complexity": "low",
+          "status": "pending",
+          "commitSha": null,
+          "reviewStatus": null
+        }
+      ]
+    }
+  ],
   "conventions_discovered": [],
   "fix_iterations": {}
 }
