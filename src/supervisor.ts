@@ -3,15 +3,24 @@ import type {
   Env,
   DagState,
   DagNode,
+  AgentConfig,
   PipelineConfig,
   PipelineStep,
   PipelineEvent,
+  PipelineEventType,
   HandoffEnvelope,
   DispatchMessage,
+  RunMetrics,
 } from "./types";
 import { parsePipelineYaml, validatePipelineConfig } from "./schema";
 import { evaluateGate } from "./gate";
 import { createDispatchEnvelope, inputKey, artifactKey } from "./envelope";
+import { planRecovery } from "./recovery";
+import { aggregateMetrics } from "./metrics";
+import { evaluateCondition } from "./conditional";
+import { resolveImports } from "./composition";
+import { resolvePeerArtifacts } from "./gossip";
+import { getPriorRuns, appendRunSummary } from "./memory";
 
 export interface InitParams {
   runId: string;
@@ -78,7 +87,7 @@ export class Supervisor extends DurableObject<Env> {
   }
 
   private logEvent(
-    eventType: PipelineEvent["event_type"],
+    eventType: PipelineEventType,
     agentRole: string | null,
     details: Record<string, unknown>
   ) {
@@ -92,6 +101,16 @@ export class Supervisor extends DurableObject<Env> {
     );
   }
 
+  private getBreakerStub() {
+    if (!this.env.CIRCUIT_BREAKER) return null;
+    const id = this.env.CIRCUIT_BREAKER.idFromName("global");
+    return this.env.CIRCUIT_BREAKER.get(id) as unknown as {
+      check(role: string): Promise<{ allowed: boolean; status: unknown }>;
+      failure(role: string): Promise<unknown>;
+      success(role: string): Promise<unknown>;
+    };
+  }
+
   async initializeRun(params: InitParams): Promise<InitResult> {
     this.initSchema();
 
@@ -103,7 +122,21 @@ export class Supervisor extends DurableObject<Env> {
       };
     }
 
-    const validationErrors = validatePipelineConfig(parsed.data);
+    let configWithImports = parsed.data;
+    if (parsed.data.pipeline.some((s) => s.import)) {
+      try {
+        configWithImports = await resolveImports(parsed.data, async (name) => {
+          return await this.env.PIPELINE_KV.get(`pipeline:${name}`);
+        });
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
+    }
+
+    const validationErrors = validatePipelineConfig(configWithImports);
     if (validationErrors.length > 0) {
       return {
         success: false,
@@ -111,7 +144,7 @@ export class Supervisor extends DurableObject<Env> {
       };
     }
 
-    this.config = parsed.data;
+    this.config = configWithImports;
 
     const nodes: Record<string, DagNode> = {};
     for (const agent of this.config.agents) {
@@ -177,52 +210,157 @@ export class Supervisor extends DurableObject<Env> {
       return;
     }
 
+    // Evaluate `when:` guard. False → mark step's agents completed with empty
+    // artifacts and advance, so downstream gates relying on `all_agents_completed`
+    // still pass.
+    if (step.when) {
+      const events = await this.getEvents();
+      let pass = true;
+      try {
+        pass = evaluateCondition(step.when, { dag: this.dag, events });
+      } catch (e) {
+        // Bad expression — fail-open and log so user can fix the YAML.
+        this.logEvent("error", null, {
+          reason: "when_eval_failed",
+          error: e instanceof Error ? e.message : String(e),
+          step: step.step,
+        });
+        pass = true;
+      }
+      if (!pass) {
+        this.logEvent("step_skipped", null, { step: step.step, when: step.when });
+        const skippedAgents = step.agents ?? (step.agent ? [step.agent] : []);
+        for (const agentId of skippedAgents) {
+          const node = this.dag.nodes[agentId];
+          if (!node) continue;
+          node.status = "completed";
+          node.artifact_ref = artifactKey(this.dag.run_id, agentId);
+          await this.env.ARTIFACT_STORE.put(
+            node.artifact_ref,
+            JSON.stringify({ skipped: true, reason: step.when })
+          );
+        }
+        this.dag.current_step++;
+        this.saveDag();
+        await this.dispatchCurrentStep();
+        return;
+      }
+    }
+
     const agentIds = step.agents ?? (step.agent ? [step.agent] : []);
-    const supervisorDoId = this.ctx.id.toString();
 
     for (const agentId of agentIds) {
-      const node = this.dag.nodes[agentId];
-      if (!node) continue;
-
-      node.status = "dispatched";
-
-      let parentRefs: string[];
-      if (step.inputs && step.inputs.length > 0) {
-        parentRefs = step.inputs.map((id) =>
-          artifactKey(this.dag!.run_id, id)
-        );
-      } else {
-        parentRefs = [this.dag.input_ref];
-      }
-
-      const agentConfig = this.config.agents.find((a) => a.id === agentId)!;
-
-      const envelope = createDispatchEnvelope({
-        runId: this.dag.run_id,
-        fromAgent: "supervisor",
-        fromDoId: supervisorDoId,
-        toAgent: agentId,
-        toDoId: node.do_id,
-        inputRefs: parentRefs,
-      });
-
-      const message: DispatchMessage = {
-        type: "dispatch",
-        envelope,
-        agent_config: agentConfig,
-        model_defaults: this.config.model_defaults,
-      };
-
-      await this.env.DISPATCH_QUEUE.send(message);
-
-      this.logEvent("dispatch", agentId, {
-        step: step.step,
-        input_refs: parentRefs,
-      });
+      await this.dispatchAgent(agentId, step);
     }
 
     this.dag.status = "running";
     this.saveDag();
+  }
+
+  /**
+   * Dispatch a single agent. Used by both initial step dispatch and recovery flows.
+   * `slotAgentId` is the DAG node slot (the failed agent's id when retrying or running a fallback);
+   * `useAgent` overrides the agent definition (used for fallbacks where a different agent
+   * runs under the failed agent's slot, writing to the same artifact key).
+   */
+  private async dispatchAgent(
+    slotAgentId: string,
+    step: PipelineStep,
+    useAgent?: AgentConfig
+  ) {
+    if (!this.dag || !this.config) return;
+    const node = this.dag.nodes[slotAgentId];
+    if (!node) return;
+
+    const agentConfig =
+      useAgent ?? this.config.agents.find((a) => a.id === slotAgentId);
+    if (!agentConfig) return;
+
+    // Circuit breaker pre-check (per-role, global across runs)
+    const breaker = this.getBreakerStub();
+    if (breaker) {
+      try {
+        const { allowed, status } = await breaker.check(slotAgentId);
+        if (!allowed) {
+          node.status = "failed";
+          node.error = "circuit_breaker_open";
+          this.logEvent("circuit_trip", slotAgentId, { status });
+          // Treat as failure so recovery kicks in
+          await this.handleAgentFailure(slotAgentId, "circuit_breaker_open", {
+            skipBreaker: true,
+          });
+          return;
+        }
+      } catch (e) {
+        // Breaker unavailable — fail open (allow dispatch)
+        console.error(`Breaker check failed: ${e}`);
+      }
+    }
+
+    node.status = "dispatched";
+
+    let parentRefs: string[];
+    if (step.inputs && step.inputs.length > 0) {
+      parentRefs = step.inputs.map((id) => artifactKey(this.dag!.run_id, id));
+    } else {
+      parentRefs = [this.dag.input_ref];
+    }
+
+    // The agent receives slotAgentId as its identity (so it writes to the slot's
+    // artifact key) but executes the (possibly fallback) agentConfig's role.
+    const dispatchAgentConfig: AgentConfig = useAgent
+      ? { ...useAgent, id: slotAgentId }
+      : agentConfig;
+
+    const envelope = createDispatchEnvelope({
+      runId: this.dag.run_id,
+      fromAgent: "supervisor",
+      fromDoId: this.ctx.id.toString(),
+      toAgent: slotAgentId,
+      toDoId: node.do_id,
+      inputRefs: parentRefs,
+      retryCount: node.retry_count,
+    });
+
+    // Gossip — only completed peers explicitly opted-in via expose: public
+    const peers = resolvePeerArtifacts(
+      dispatchAgentConfig,
+      this.config.agents,
+      this.dag
+    );
+
+    // Cross-run memory — fetch past summaries when the agent opts in
+    let priorRuns = undefined;
+    if (dispatchAgentConfig.memory.include_prior_runs) {
+      try {
+        priorRuns = await getPriorRuns(
+          this.env,
+          this.config.name,
+          dispatchAgentConfig.memory.max_prior_runs ?? 3,
+          this.dag.run_id
+        );
+      } catch (e) {
+        console.error(`getPriorRuns failed: ${e}`);
+      }
+    }
+
+    const message: DispatchMessage = {
+      type: "dispatch",
+      envelope,
+      agent_config: dispatchAgentConfig,
+      model_defaults: this.config.model_defaults,
+      ...(peers.length > 0 ? { peers } : {}),
+      ...(priorRuns && priorRuns.length > 0 ? { prior_runs: priorRuns } : {}),
+    };
+
+    await this.env.DISPATCH_QUEUE.send(message);
+
+    this.logEvent("dispatch", slotAgentId, {
+      step: step.step,
+      input_refs: parentRefs,
+      retry_count: node.retry_count,
+      ...(useAgent ? { fallback_from: useAgent.id } : {}),
+    });
   }
 
   async handleAgentCompletion(envelope: HandoffEnvelope) {
@@ -239,6 +377,8 @@ export class Supervisor extends DurableObject<Env> {
     node.tokens_used = envelope.metadata.tokens_used;
     node.duration_ms = envelope.metadata.duration_ms;
     node.retry_count = envelope.metadata.retry_count;
+    node.model = envelope.metadata.model;
+    delete node.error;
 
     this.dag.total_tokens += envelope.metadata.tokens_used;
     this.dag.total_duration_ms = Math.max(
@@ -251,6 +391,26 @@ export class Supervisor extends DurableObject<Env> {
       model: envelope.metadata.model,
       duration_ms: envelope.metadata.duration_ms,
     });
+
+    // Inform breaker that this role just succeeded.
+    const breaker = this.getBreakerStub();
+    if (breaker) {
+      try {
+        await breaker.success(agentId);
+      } catch (e) {
+        console.error(`Breaker success record failed: ${e}`);
+      }
+    }
+
+    await this.advanceIfStepDone();
+  }
+
+  /**
+   * If every agent in the current step has reached a terminal state
+   * (completed or failed), evaluate the next gate and advance.
+   */
+  private async advanceIfStepDone() {
+    if (!this.dag || !this.config) return;
 
     const currentStep = this.dag.steps[this.dag.current_step];
     if (!currentStep) {
@@ -289,6 +449,19 @@ export class Supervisor extends DurableObject<Env> {
       });
 
       if (!gateResult.pass) {
+        // Honour escalation if configured for gate failure.
+        const esc = this.config.recovery.escalation;
+        if (esc) {
+          this.dag.status = "awaiting_human";
+          this.logEvent("escalation", null, {
+            reason: "gate_fail",
+            gate: nextStep.step,
+            channel: esc.channel,
+            target: esc.target,
+          });
+          this.saveDag();
+          return;
+        }
         this.dag.status = "failed";
         this.saveDag();
         return;
@@ -304,6 +477,14 @@ export class Supervisor extends DurableObject<Env> {
         to: "completed",
       });
       this.saveDag();
+      // Append a summary to cross-run memory so future runs can reference it.
+      try {
+        const events = await this.getEvents();
+        const summary = aggregateMetrics(this.dag, events);
+        await appendRunSummary(this.env, summary, new Date().toISOString());
+      } catch (e) {
+        console.error(`appendRunSummary failed: ${e}`);
+      }
       return;
     }
 
@@ -312,21 +493,118 @@ export class Supervisor extends DurableObject<Env> {
     await this.dispatchCurrentStep();
   }
 
-  async handleAgentFailure(agentId: string, error: string) {
+  async handleAgentFailure(
+    agentId: string,
+    error: string,
+    opts: { skipBreaker?: boolean } = {}
+  ) {
     this.initSchema();
     if (!this.dag && !this.loadDag()) return;
-    if (!this.dag) return;
+    if (!this.dag || !this.config) return;
 
     const node = this.dag.nodes[agentId];
-    if (node) {
-      node.status = "failed";
-      node.error = error;
-    }
+    if (!node) return;
 
+    node.status = "failed";
+    node.error = error;
     this.logEvent("error", agentId, { error });
 
+    // Tell the breaker about this failure (unless caller already handled it).
+    if (!opts.skipBreaker) {
+      const breaker = this.getBreakerStub();
+      if (breaker) {
+        try {
+          await breaker.failure(agentId);
+        } catch (e) {
+          console.error(`Breaker failure record failed: ${e}`);
+        }
+      }
+    }
+
+    const agent = this.config.agents.find((a) => a.id === agentId);
+    if (!agent) {
+      this.dag.status = "failed";
+      this.saveDag();
+      return;
+    }
+
+    const action = planRecovery({ config: this.config, agent, node });
+    node.last_recovery = action;
+    this.logEvent("recovery_attempt", agentId, { action });
+
+    if (action.kind === "retry") {
+      node.retry_count = action.attempt;
+      node.status = "pending";
+      delete node.error;
+      this.saveDag();
+      // delay_ms is captured in the event; in-Worker delays would require DO alarms.
+      // For now we redispatch immediately and rely on Queue retry semantics.
+      const step = this.dag.steps[node.step_index];
+      if (step) await this.dispatchAgent(agentId, step);
+      return;
+    }
+
+    if (action.kind === "fallback") {
+      if (action.skip) {
+        // Failed agent stays failed; downstream gets N-1 inputs.
+        this.saveDag();
+        await this.advanceIfStepDone();
+        return;
+      }
+      if (action.agent_id) {
+        const fallbackAgent = this.config.agents.find(
+          (a) => a.id === action.agent_id
+        );
+        if (fallbackAgent) {
+          node.retry_count++;
+          node.status = "pending";
+          delete node.error;
+          this.saveDag();
+          const step = this.dag.steps[node.step_index];
+          if (step) await this.dispatchAgent(agentId, step, fallbackAgent);
+          return;
+        }
+      }
+      // Fallback policy malformed — fall through to fail
+    }
+
+    if (action.kind === "escalate") {
+      this.dag.status = "awaiting_human";
+      this.logEvent("escalation", agentId, {
+        channel: action.channel,
+        target: action.target,
+      });
+      this.saveDag();
+      return;
+    }
+
+    // fail: terminal
     this.dag.status = "failed";
     this.saveDag();
+  }
+
+  async getMetrics(): Promise<RunMetrics> {
+    this.initSchema();
+    if (!this.dag) this.loadDag();
+    const events = await this.getEvents();
+    if (!this.dag) {
+      return {
+        run_id: "",
+        pipeline_name: "",
+        status: "submitted",
+        total_tokens: 0,
+        total_duration_ms: 0,
+        total_retries: 0,
+        agents_completed: 0,
+        agents_failed: 0,
+        gates_passed: 0,
+        gates_failed: 0,
+        recovery_attempts: 0,
+        circuit_trips: 0,
+        per_agent: [],
+      };
+    }
+    return aggregateMetrics(this.dag, events);
   }
 
   async getState(): Promise<DagState> {
@@ -350,10 +628,14 @@ export class Supervisor extends DurableObject<Env> {
     return this.dag;
   }
 
-  async getEvents(): Promise<PipelineEvent[]> {
+  async getEvents(sinceId?: number | string): Promise<PipelineEvent[]> {
     this.initSchema();
+    const cursor =
+      sinceId === undefined || sinceId === null || sinceId === ""
+        ? 0
+        : Number(sinceId);
     const rows = this.ctx.storage.sql
-      .exec("SELECT * FROM events ORDER BY id ASC")
+      .exec("SELECT * FROM events WHERE id > ? ORDER BY id ASC", cursor)
       .toArray();
     return rows.map((r) => ({
       id: String(r.id),

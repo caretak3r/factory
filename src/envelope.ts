@@ -15,6 +15,7 @@ interface DispatchEnvelopeParams {
   toAgent: string;
   toDoId: string;
   inputRefs: string[];
+  retryCount?: number;
 }
 
 export function createDispatchEnvelope(params: DispatchEnvelopeParams): HandoffEnvelope {
@@ -27,7 +28,12 @@ export function createDispatchEnvelope(params: DispatchEnvelopeParams): HandoffE
     artifact_type: "dispatch",
     gate_results: {},
     context_window: { parent_refs: params.inputRefs },
-    metadata: { tokens_used: 0, model: "", duration_ms: 0, retry_count: 0 },
+    metadata: {
+      tokens_used: 0,
+      model: "",
+      duration_ms: 0,
+      retry_count: params.retryCount ?? 0,
+    },
     timestamp: new Date().toISOString(),
   };
 }

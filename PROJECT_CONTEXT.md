@@ -4,9 +4,31 @@ Multi-agent pipeline orchestration platform. Cloudflare-native. Anthropic-primar
 
 ## Status
 
-**Phase:** Design (brainstorming complete, spec pending)
+**Phase:** Phase 4 complete (conditional + composition + gossip + memory)
 **Started:** 2026-04-23
 **Target user:** Dogfood (Rohit is user zero)
+
+**Phase 2 shipped (2026-05-03):**
+- Structured recovery DSL (replaced string config) — retry/fallback/escalation as Zod objects
+- Per-role global circuit breaker (singleton DO `CircuitBreaker`, 5-failure / 60s window, 30s decay → half-open)
+- Recovery state machine in supervisor: retry-with-backoff → agent fallback → recovery-config fallback → escalate-to-human → fail
+- New event types: `recovery_attempt`, `circuit_trip`, `escalation`
+- New endpoints: `GET /api/runs/:id/metrics`, `GET /api/circuit-breaker`
+
+**Phase 3 shipped (2026-05-03):**
+- HTMX + SSE dashboard at `/`, `/runs`, `/runs/:id`, `/pipelines`, `/pipelines/:name`
+- Server-rendered Mermaid DAG (auto-refreshes via HTMX poll); live event stream via `/api/runs/:id/stream`
+- Multi-turn agent loop in `agent.ts` (driven by `AgentConfig.turns.max` + optional `stop_when` substring); per-turn history persisted in agent DO SQLite
+- Anthropic wrapper (`callAnthropic`) now accepts `messages[]` and exposes raw `blocks` (text + tool_use)
+- Tool registry (`src/tools/registry.ts`): `read`, `grep`, `semgrep` (stub), `test-runner` (stub); R2-scoped sandbox blocks path traversal + cross-run access; 10s wall-clock timeout per call
+
+**Phase 4 shipped (2026-05-03):**
+- Conditional steps: `when:` DSL evaluator (`src/conditional.ts`) — whitelisted refs (`agent.X.completed`, `agent.X.tokens`, `gate.X.passed`, `metrics.total_tokens`, etc.), boolean ops, comparisons, no eval. Skipped steps emit `step_skipped` events and write empty artifacts so downstream gates pass
+- Pipeline composition: `import:` step (`src/composition.ts`) — one level deep, prefixed agent/step IDs (`<step>__<inner>`), cycle detection, missing-import errors
+- Mid-run gossip: `src/gossip.ts` — opt-in two-sided trust (`gossip.read_peers` on reader, `gossip.expose: public` on peer); supervisor passes peer artifact refs in dispatch message; agent prepends them to prompt
+- Cross-run memory: `src/memory.ts` — KV-backed per-pipeline-name index (cap 50), supervisor appends summary on terminal state, agents fetch via `memory.include_prior_runs` opt-in. Read-only (no feedback loops in v1)
+- Examples: `pipelines/security-base.yaml` (reusable block), `pipelines/conditional-review.yaml` (uses all four Phase-4 features)
+- Test count: 96 → 137 (41 new across conditional, composition, gossip, memory, e2e)
 
 ## What This Is
 
@@ -150,10 +172,10 @@ See `docs/diagrams/` for Mermaid architecture diagrams:
 
 ## Open Questions
 
-- [ ] Dashboard tech: Hono + HTMX vs React SPA from R2?
+- [x] Dashboard tech: Hono + HTMX vs React SPA from R2? → Hono + HTMX + SSE
 - [ ] Observability: structured logs to R2 vs external (Axiom/Baselime)?
-- [ ] Agent tool sandboxing: how do agents safely execute tools (grep, test-runner)?
-- [ ] YAML schema validation: JSON Schema or Zod at deploy time?
+- [x] Agent tool sandboxing: how do agents safely execute tools? → R2-scoped read-only access via `src/tools/sandbox.ts`; 10s wall-time cap; `semgrep`/`test-runner` are stubs (no real sandbox in Workers)
+- [x] YAML schema validation: JSON Schema or Zod at deploy time? → Zod
 - [ ] Pipeline versioning: how to handle YAML schema evolution?
 
 ## Lineage

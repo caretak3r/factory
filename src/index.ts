@@ -1,11 +1,17 @@
 import { Hono } from "hono";
 import type { Env, DispatchMessage, ResultMessage } from "./types";
 import { parsePipelineYaml, validatePipelineConfig } from "./schema";
+import { ui } from "./ui";
+import { streamRun } from "./sse";
 
 export { Agent } from "./agent";
 export { Supervisor } from "./supervisor";
+export { CircuitBreaker } from "./circuit-breaker";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Mount the dashboard UI at the root (also handles /ui/* HTMX partials)
+app.route("/", ui);
 
 // ─── Health ────────────────────────────────────────
 app.get("/api/health", (c) => c.json({ status: "ok", service: "agentx-factory" }));
@@ -102,6 +108,30 @@ app.get("/api/runs/:id/events", async (c) => {
   return c.json({ events });
 });
 
+app.get("/api/runs/:id/stream", (c) => {
+  const runId = c.req.param("id");
+  const since = c.req.query("since") ?? "0";
+  return streamRun(c.env, runId, since);
+});
+
+app.get("/api/runs/:id/metrics", async (c) => {
+  const runId = c.req.param("id");
+  const supervisorId = c.env.SUPERVISOR.idFromName(runId);
+  const supervisor = c.env.SUPERVISOR.get(supervisorId);
+  const metrics = await (supervisor as any).getMetrics();
+  return c.json(metrics);
+});
+
+app.get("/api/circuit-breaker", async (c) => {
+  if (!c.env.CIRCUIT_BREAKER) {
+    return c.json({ error: "Circuit breaker not configured" }, 503);
+  }
+  const breakerId = c.env.CIRCUIT_BREAKER.idFromName("global");
+  const breaker = c.env.CIRCUIT_BREAKER.get(breakerId);
+  const all = await (breaker as any).getAll();
+  return c.json({ breakers: all });
+});
+
 app.get("/api/runs/:id/artifacts/:key{.+}", async (c) => {
   const key = c.req.param("key");
   const obj = await c.env.ARTIFACT_STORE.get(key);
@@ -132,6 +162,8 @@ export default {
             inputRefs: dispatch.envelope.context_window.parent_refs,
             supervisorDoId: dispatch.envelope.from.do_id,
             retryCount: dispatch.envelope.metadata.retry_count,
+            peers: dispatch.peers,
+            priorRuns: dispatch.prior_runs,
           });
           msg.ack();
         } catch (e) {

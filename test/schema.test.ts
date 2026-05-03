@@ -66,9 +66,13 @@ pipeline:
     inputs: [security, performance, correctness]
 
 recovery:
-  default: "retry(max=2, backoff=exponential)"
-  fallback: "degrade(skip_failed_agent=true)"
-  escalation: "human(channel=notification)"
+  default:
+    max: 2
+    backoff: exponential
+  fallback:
+    skip_failed_agent: true
+  escalation:
+    channel: notification
 
 budget:
   max_tokens: 100000
@@ -114,10 +118,7 @@ agents:
 pipeline:
   - step: run
     agent: broken
-recovery:
-  default: retry
-  fallback: degrade
-  escalation: human
+recovery: {}
 budget:
   max_tokens: 1000
   max_duration_ms: 1000

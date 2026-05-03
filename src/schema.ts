@@ -8,13 +8,31 @@ const ModelDefaultsSchema = z.object({
   classification: z.string(),
 });
 
+const AgentTurnsSchema = z.object({
+  max: z.number().int().positive(),
+  stop_when: z.string().optional(),
+});
+
+const GossipPolicySchema = z.object({
+  read_peers: z.array(z.string()).optional(),
+  expose: z.enum(["public", "private"]).optional(),
+});
+
+const AgentMemorySchema = z.object({
+  max_tokens: z.number().positive(),
+  include_prior_runs: z.boolean().optional(),
+  max_prior_runs: z.number().int().positive().optional(),
+});
+
 const AgentConfigSchema = z.object({
   id: z.string().min(1),
   role: z.string().min(1),
   model: z.string().min(1),
   tools: z.array(z.string()).default([]),
-  memory: z.object({ max_tokens: z.number().positive() }),
+  memory: AgentMemorySchema,
   fallback: z.string().optional(),
+  turns: AgentTurnsSchema.optional(),
+  gossip: GossipPolicySchema.optional(),
 });
 
 const PipelineStepSchema = z.object({
@@ -28,12 +46,31 @@ const PipelineStepSchema = z.object({
   on_fail: z.string().optional(),
   on_match: z.string().optional(),
   on_pass: z.string().optional(),
+  when: z.string().min(1).optional(),
+  import: z.string().min(1).optional(),
+});
+
+const RetryPolicySchema = z.object({
+  max: z.number().int().nonnegative(),
+  backoff: z.enum(["exponential", "linear", "constant"]),
+  base_ms: z.number().int().positive().optional(),
+  cap_ms: z.number().int().positive().optional(),
+});
+
+const FallbackPolicySchema = z.object({
+  skip_failed_agent: z.boolean().optional(),
+  use_agent: z.string().min(1).optional(),
+});
+
+const EscalationPolicySchema = z.object({
+  channel: z.enum(["notification", "email", "webhook", "human"]),
+  target: z.string().optional(),
 });
 
 const RecoveryConfigSchema = z.object({
-  default: z.string(),
-  fallback: z.string(),
-  escalation: z.string(),
+  default: RetryPolicySchema.optional(),
+  fallback: FallbackPolicySchema.optional(),
+  escalation: EscalationPolicySchema.optional(),
 });
 
 const BudgetConfigSchema = z.object({
@@ -108,6 +145,12 @@ export function validatePipelineConfig(config: PipelineConfig): string[] {
     if (agent.fallback && !agentIds.has(agent.fallback)) {
       errors.push(`Agent "${agent.id}" fallback references unknown agent "${agent.fallback}"`);
     }
+  }
+
+  if (config.recovery.fallback?.use_agent && !agentIds.has(config.recovery.fallback.use_agent)) {
+    errors.push(
+      `recovery.fallback.use_agent references unknown agent "${config.recovery.fallback.use_agent}"`
+    );
   }
 
   return errors;

@@ -6,12 +6,17 @@ compatibility_flags = ["nodejs_compat"]
 [durable_objects]
 bindings = [
   { name = "SUPERVISOR", class_name = "Supervisor" },
-  { name = "AGENT", class_name = "Agent" }
+  { name = "AGENT", class_name = "Agent" },
+  { name = "CIRCUIT_BREAKER", class_name = "CircuitBreaker" }
 ]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Supervisor", "Agent"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["CircuitBreaker"]
 
 [[queues.producers]]
 binding = "DISPATCH_QUEUE"

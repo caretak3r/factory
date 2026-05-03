@@ -1,8 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { parsePipelineYaml, validatePipelineConfig } from "../src/schema";
+import { resolveImports } from "../src/composition";
 
 const codeReviewYaml = readFileSync("pipelines/code-review.yaml", "utf-8");
+const securityBaseYaml = readFileSync("pipelines/security-base.yaml", "utf-8");
+const conditionalReviewYaml = readFileSync(
+  "pipelines/conditional-review.yaml",
+  "utf-8"
+);
 
 describe("E2E: Pipeline Integration", () => {
   it("code-review.yaml is valid and passes all validation", () => {
@@ -78,12 +84,48 @@ describe("E2E: Pipeline Integration", () => {
 
   // Note: index.ts export test requires cloudflare:workers runtime.
   // Verified via: npx wrangler deploy --dry-run --outdir=dist
-  it("recovery config uses expected keywords", () => {
+  it("security-base.yaml is a valid standalone pipeline", () => {
+    const parsed = parsePipelineYaml(securityBaseYaml);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(validatePipelineConfig(parsed.data)).toEqual([]);
+    // Both imported agents should be public-exposed
+    expect(parsed.data.agents.every((a) => a.gossip?.expose === "public")).toBe(true);
+  });
+
+  it("conditional-review.yaml resolves imports and validates end-to-end", async () => {
+    const parsed = parsePipelineYaml(conditionalReviewYaml);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+
+    const resolved = await resolveImports(parsed.data, async (name) =>
+      name === "security-base" ? securityBaseYaml : null
+    );
+
+    // After import: agents should include the namespaced sub-pipeline agents
+    const agentIds = resolved.agents.map((a) => a.id).sort();
+    expect(agentIds).toContain("security-review__scanner");
+    expect(agentIds).toContain("security-review__triage");
+    expect(agentIds).toContain("deep-dive");
+    expect(agentIds).toContain("synthesizer");
+
+    // Validation should pass — references in deep-dive/synthesize must resolve
+    expect(validatePipelineConfig(resolved)).toEqual([]);
+
+    // when: clause survives import
+    const deepDive = resolved.pipeline.find((s) => s.step === "deep-dive")!;
+    expect(deepDive.when).toContain("security-review__triage.tokens");
+  });
+
+  it("recovery config parses into structured policies", () => {
     const parsed = parsePipelineYaml(codeReviewYaml);
     if (!parsed.success) return;
 
-    expect(parsed.data.recovery.default).toContain("retry");
-    expect(parsed.data.recovery.fallback).toContain("degrade");
-    expect(parsed.data.recovery.escalation).toContain("human");
+    expect(parsed.data.recovery.default).toEqual({
+      max: 2,
+      backoff: "exponential",
+    });
+    expect(parsed.data.recovery.fallback).toEqual({ skip_failed_agent: true });
+    expect(parsed.data.recovery.escalation).toEqual({ channel: "notification" });
   });
 });

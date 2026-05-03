@@ -1,0 +1,47 @@
+name: security-base
+version: 1
+description: Reusable security review block — imported by full-review
+
+model_defaults:
+  planning: claude-opus-4-6
+  execution: claude-sonnet-4-6
+  classification: claude-haiku-4-5-20251001
+
+agents:
+  - id: scanner
+    role: >
+      Security scanner. Read the diff and emit a JSON list of findings:
+      [{ severity: "critical"|"high"|"medium"|"low", area, description }]
+    model: execution
+    tools: []
+    memory: { max_tokens: 6000 }
+    gossip:
+      expose: public
+
+  - id: triage
+    role: >
+      Senior security reviewer. Read scanner output, dedupe, prioritize by
+      severity, and emit a triaged report.
+    model: planning
+    tools: []
+    memory: { max_tokens: 8000 }
+    gossip:
+      expose: public
+
+pipeline:
+  - step: scan
+    agent: scanner
+
+  - step: triage
+    agent: triage
+    inputs: [scanner]
+
+recovery:
+  default:
+    max: 1
+    backoff: constant
+
+budget:
+  max_tokens: 30000
+  max_duration_ms: 120000
+  max_retries: 2
