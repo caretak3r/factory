@@ -109,7 +109,10 @@ describe("ui.runDetail", () => {
     ];
     const html = render(runDetail("run-abc", sampleDag, events));
     expect(html).toContain('sse-connect="/api/runs/run-abc/stream?since=5"');
+    // Visible event log subscribes to per-event stream
     expect(html).toContain('sse-swap="event"');
+    // Hidden sink subscribes to per-state-change stream (drives OOB updates)
+    expect(html).toContain('sse-swap="state"');
   });
 });
 

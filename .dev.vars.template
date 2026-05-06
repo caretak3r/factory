@@ -1,0 +1,12 @@
+# Local development secrets for `wrangler dev`.
+# Copy to `.dev.vars` (gitignored) and fill in real values.
+#
+#   cp .dev.vars.template .dev.vars
+#
+# Format: KEY=value, one per line. No `export`, no quotes needed.
+# These map 1:1 to the `Env` interface in src/types.ts. In production,
+# set them via `npx wrangler secret put <NAME>` instead.
+
+# Required. Anthropic API key — every agent LLM call uses this.
+# Get one at https://console.anthropic.com/settings/keys
+ANTHROPIC_API_KEY=sk-ant-...
