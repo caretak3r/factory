@@ -41,6 +41,39 @@ budget:
   max_retries: 2
 `;
 
+const GUARDED_BASE_YAML = `
+name: guarded-base
+version: 1
+description: Reusable block whose triage step is guarded
+model_defaults:
+  planning: claude-opus-4-6
+  execution: claude-sonnet-4-6
+  classification: claude-haiku-4-5-20251001
+agents:
+  - id: scanner
+    role: Run scans
+    model: execution
+    tools: []
+    memory: { max_tokens: 4000 }
+  - id: triage
+    role: Triage findings
+    model: planning
+    tools: []
+    memory: { max_tokens: 8000 }
+pipeline:
+  - step: scan
+    agent: scanner
+  - step: triage
+    agent: triage
+    inputs: [scanner]
+    when: agent.scanner.completed
+recovery: {}
+budget:
+  max_tokens: 50000
+  max_duration_ms: 60000
+  max_retries: 2
+`;
+
 const NESTED_IMPORT_YAML = `
 name: nested
 version: 1
@@ -126,6 +159,14 @@ describe("composition.resolveImports", () => {
     expect(triageStep.inputs).toEqual(["review__scanner"]);
   });
 
+  it("remaps agent refs inside an imported step's when: guard", async () => {
+    const cfg = parentWithImport();
+    cfg.pipeline = [{ step: "review", import: "guarded-base" }];
+    const out = await resolveImports(cfg, lookupOf({ "guarded-base": GUARDED_BASE_YAML }));
+    const triage = out.pipeline.find((s) => s.step === "review__triage")!;
+    expect(triage.when).toBe("agent.review__scanner.completed");
+  });
+
   it("preserves non-import steps unchanged", async () => {
     const out = await resolveImports(
       parentWithImport(),
@@ -170,5 +211,16 @@ describe("composition.resolveImports", () => {
     const out = await resolveImports(cfg, lookupOf({}));
     expect(out.pipeline).toEqual(cfg.pipeline);
     expect(out.agents).toEqual(cfg.agents);
+  });
+
+  it("throws on a step-name collision after import (CFEAT-07)", async () => {
+    const cfg = parentWithImport();
+    cfg.pipeline = [
+      { step: "review__scan", agent: "synthesizer" },
+      { step: "review", import: "guarded-base" },
+    ];
+    await expect(
+      resolveImports(cfg, lookupOf({ "guarded-base": GUARDED_BASE_YAML }))
+    ).rejects.toThrow(/step name collision/);
   });
 });

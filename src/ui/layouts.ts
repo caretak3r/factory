@@ -16,7 +16,7 @@ const MERMAID_SRC = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js
 
 /** Render a full HTML page. Body and other inputs must be already-escaped HTML. */
 export function page(opts: PageOpts): HtmlEscapedString {
-  return html`<!doctype html>
+  return (html`<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -540,5 +540,5 @@ export function page(opts: PageOpts): HtmlEscapedString {
     </script>
     ${opts.bodyScripts ?? raw("")}
   </body>
-</html>`;
+</html>`) as HtmlEscapedString;
 }

@@ -10,21 +10,21 @@ interface RunSummary {
 }
 
 export function home(): HtmlEscapedString {
-  return html`
+  return (html`
     <h1>AgentX Factory</h1>
     <p>Multi-agent pipeline orchestration on Cloudflare. Pick a section above.</p>
     <ul>
       <li><a href="/runs">View pipeline runs</a></li>
       <li><a href="/pipelines">Manage pipelines</a></li>
     </ul>
-  `;
+  `) as HtmlEscapedString;
 }
 
 export function runList(runs: RunSummary[]): HtmlEscapedString {
   if (runs.length === 0) {
-    return html`<h1>Runs</h1><p>No runs yet. Trigger one via <code>POST /api/runs</code>.</p>`;
+    return (html`<h1>Runs</h1><p>No runs yet. Trigger one via <code>POST /api/runs</code>.</p>`) as HtmlEscapedString;
   }
-  return html`
+  return (html`
     <h1>Runs</h1>
     <table>
       <thead>
@@ -46,7 +46,7 @@ export function runList(runs: RunSummary[]): HtmlEscapedString {
         )}
       </tbody>
     </table>
-  `;
+  `) as HtmlEscapedString;
 }
 
 /**
@@ -89,7 +89,7 @@ export function dagMermaid(dag: DagState): HtmlEscapedString {
   lines.push("  classDef status-dispatched fill:#0a2638,stroke:#6dd6ff,color:#6dd6ff;");
   lines.push("  classDef status-pending fill:#1a1d22,stroke:#8a8f98,color:#8a8f98;");
 
-  return html`<pre class="mermaid">${raw(lines.join("\n"))}</pre>`;
+  return (html`<pre class="mermaid">${raw(lines.join("\n"))}</pre>`) as HtmlEscapedString;
 }
 
 /**
@@ -106,7 +106,7 @@ export function dagLive(dag: DagState): HtmlEscapedString {
   }
   const stepIndices = [...nodesByStep.keys()].sort((a, b) => a - b);
 
-  return html`<div class="dag-live" role="list" aria-label="Pipeline DAG">
+  return (html`<div class="dag-live" role="list" aria-label="Pipeline DAG">
     ${stepIndices.map((idx) => {
       const nodes = nodesByStep.get(idx)!;
       const stepDef: PipelineStep | undefined = dag.steps[idx];
@@ -122,7 +122,7 @@ export function dagLive(dag: DagState): HtmlEscapedString {
         </div>
       </div>`;
     })}
-  </div>`;
+  </div>`) as HtmlEscapedString;
 }
 
 function stepLabelText(step: PipelineStep): string {
@@ -137,7 +137,7 @@ export function agentNodeCard(n: DagNode): HtmlEscapedString {
   const dur = formatDuration(n.duration_ms);
   const tokens = formatNumber(n.tokens_used);
   const isInflight = n.status === "running" || n.status === "dispatched";
-  return html`<article
+  return (html`<article
     class="node status-${n.status} ${isInflight ? "is-inflight" : ""}"
     id="node-${n.agent_id}"
     role="listitem"
@@ -156,12 +156,12 @@ export function agentNodeCard(n: DagNode): HtmlEscapedString {
         : raw("")}
     </div>
     <footer class="node-model">${n.model ?? "—"}</footer>
-  </article>`;
+  </article>`) as HtmlEscapedString;
 }
 
 /** Header counters block. Stable id = `run-stats`. */
 export function headerStats(dag: DagState): HtmlEscapedString {
-  return html`<p id="run-stats" class="run-stats">
+  return (html`<p id="run-stats" class="run-stats">
     <span>Pipeline: <strong>${dag.pipeline_name}</strong></span>
     <span class="sep">·</span>
     <span>Step <strong>${dag.current_step + 1}</strong> of ${dag.steps.length}</span>
@@ -173,20 +173,20 @@ export function headerStats(dag: DagState): HtmlEscapedString {
     <span class="counter" data-metric="duration"
       >${formatDuration(dag.total_duration_ms)}</span
     >
-  </p>`;
+  </p>`) as HtmlEscapedString;
 }
 
 /** Status pill with stable id for OOB swaps. */
 export function statusPill(dag: DagState): HtmlEscapedString {
-  return html`<span id="run-status-pill" class="pill status-${dag.status}"
+  return (html`<span id="run-status-pill" class="pill status-${dag.status}"
     >${dag.status}</span
-  >`;
+  >`) as HtmlEscapedString;
 }
 
 /** Per-agent table row. Stable id = `agent-row-{id}`. */
 export function agentRow(n: DagNode): HtmlEscapedString {
   const isInflight = n.status === "running" || n.status === "dispatched";
-  return html`<tr
+  return (html`<tr
     id="agent-row-${n.agent_id}"
     class="agent-row status-${n.status} ${isInflight ? "is-inflight" : ""}"
   >
@@ -196,7 +196,7 @@ export function agentRow(n: DagNode): HtmlEscapedString {
     <td>${formatDuration(n.duration_ms)}</td>
     <td>${n.retry_count}</td>
     <td>${n.model ?? "—"}</td>
-  </tr>`;
+  </tr>`) as HtmlEscapedString;
 }
 
 /**
@@ -212,7 +212,7 @@ export function oobUpdate(dag: DagState): HtmlEscapedString {
   const stats = oobWrap(headerStats(dag));
   const liveDag = oobWrapElement(dagLive(dag), "dag-live-wrap");
   const rows = Object.values(dag.nodes).map((n) => oobTemplateWrap(agentRow(n)));
-  return html`${pill}${stats}${liveDag}${rows}`;
+  return (html`${pill}${stats}${liveDag}${rows}`) as HtmlEscapedString;
 }
 
 /** Tag the OUTER element of an HTML fragment with hx-swap-oob="true". */
@@ -226,7 +226,7 @@ function oobWrap(node: HtmlEscapedString): HtmlEscapedString {
 
 /** Wrap a fragment in a stable wrapper id and mark it OOB. */
 function oobWrapElement(node: HtmlEscapedString, id: string): HtmlEscapedString {
-  return html`<div id="${id}" hx-swap-oob="true">${node}</div>`;
+  return (html`<div id="${id}" hx-swap-oob="true">${node}</div>`) as HtmlEscapedString;
 }
 
 /**
@@ -235,25 +235,25 @@ function oobWrapElement(node: HtmlEscapedString, id: string): HtmlEscapedString 
  * OOB-tagged elements inside <template> and applies the swap correctly.
  */
 function oobTemplateWrap(node: HtmlEscapedString): HtmlEscapedString {
-  return html`<template>${oobWrap(node)}</template>`;
+  return (html`<template>${oobWrap(node)}</template>`) as HtmlEscapedString;
 }
 
 export function eventLog(events: PipelineEvent[]): HtmlEscapedString {
-  return html`
+  return (html`
     <div class="event-log" id="event-log">
       ${events.map((e) => eventRow(e))}
     </div>
-  `;
+  `) as HtmlEscapedString;
 }
 
 export function eventRow(e: PipelineEvent): HtmlEscapedString {
   const t = e.timestamp.replace("T", " ").replace("Z", "");
-  return html`<div class="ev ev-${e.event_type}">
+  return (html`<div class="ev ev-${e.event_type}">
     <span class="t">${t}</span>
     <span class="type">${e.event_type}</span>
     ${e.agent_role ? html`<span class="role">${e.agent_role}</span>` : raw("")}
     <span class="kv">${JSON.stringify(e.details)}</span>
-  </div>`;
+  </div>`) as HtmlEscapedString;
 }
 
 export function runDetail(
@@ -266,7 +266,7 @@ export function runDetail(
     dag.status === "completed" ||
     dag.status === "failed" ||
     dag.status === "awaiting_human";
-  return html`
+  return (html`
     <div class="run-header">
       <h1>
         Run <span class="pill mono">${runId}</span> ${statusPill(dag)}
@@ -290,7 +290,7 @@ export function runDetail(
 
     <details class="dag-schema">
       <summary>View as flowchart (schema)</summary>
-      <div id="dag" hx-get="/ui/runs/${runId}/dag" hx-trigger="every 6s" hx-swap="innerHTML">
+      <div id="dag" hx-get="/ui/runs/${runId}/dag" hx-trigger="none" hx-swap="innerHTML">
         ${dagMermaid(dag)}
       </div>
     </details>
@@ -331,11 +331,11 @@ export function runDetail(
       <a href="/api/runs/${runId}">Raw JSON</a> ·
       <a href="/api/runs/${runId}/metrics">Metrics</a>
     </p>
-  `;
+  `) as HtmlEscapedString;
 }
 
 export function pipelineList(names: string[]): HtmlEscapedString {
-  return html`
+  return (html`
     <h1>Pipelines</h1>
     ${names.length === 0
       ? html`<p>No pipelines yet. Upload one via <code>POST /api/pipelines</code>.</p>`
@@ -344,11 +344,11 @@ export function pipelineList(names: string[]): HtmlEscapedString {
             (n) => html`<li><a href="/pipelines/${n}">${n}</a></li>`
           )}
         </ul>`}
-  `;
+  `) as HtmlEscapedString;
 }
 
 export function pipelineDetail(name: string, yaml: string): HtmlEscapedString {
-  return html`
+  return (html`
     <h1>Pipeline: ${name}</h1>
     <pre style="background:#0a0c10;padding:16px;border:1px solid var(--border);border-radius:6px;overflow-x:auto;">${yaml}</pre>
     <h2>Run this pipeline</h2>
@@ -359,7 +359,7 @@ export function pipelineDetail(name: string, yaml: string): HtmlEscapedString {
       <p><button type="submit">Start run</button></p>
     </form>
     <div id="run-result"></div>
-  `;
+  `) as HtmlEscapedString;
 }
 
 // ─── Internal sanitizers / formatters ───────────────────────────

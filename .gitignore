@@ -3,3 +3,33 @@ node_modules/
 dist/
 .mission/skills/
 .dev.vars
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+.relay/
+
+# ── Local agent tooling / harness state (not part of the distributed product) ──
+.beads/
+.mission/
+.codex/
+.agents/
+.claude/
+.relay/
+CLAUDE.md.handover-backup
+
+# ── Internal working material ──
+# plans/ holds the audit reports and implementation plans, including a detailed
+# map of known-unfixed vulnerabilities. Never publish: the deployed API has no
+# auth (see SETUP.md), so this is an exploitation guide. Kept locally.
+plans/
+docs/superpowers/
+
+# ── Operator-local pipelines (reference absolute paths on one machine) ──
+pipelines/hip-0025-review.yaml
+
+# Agent-harness instructions (beads boilerplate, unfilled placeholders — local only)
+CLAUDE.md
+AGENTS.md

@@ -23,11 +23,44 @@ export interface ConditionContext {
  *            grouping `( )`, literals: numbers, "strings", true, false
  */
 export function evaluateCondition(expr: string, ctx: ConditionContext): boolean {
-  const parser = new Parser(tokenize(expr));
-  const ast = parser.parseExpr();
-  parser.expect("eof");
-  const result = evalNode(ast, ctx);
-  return Boolean(result);
+  if (expr.trim() === "") return true;
+  const ast = compile(expr);
+  return Boolean(evalNode(ast, ctx));
+}
+
+/**
+ * Rewrite `agent.<id>` and `gate.<step>` references inside a `when:` expression
+ * by prefixing the id/step, used when an imported sub-pipeline is namespaced.
+ * `metrics.*` references and every literal/operator are left unchanged. Uses the
+ * same tokenizer the evaluator uses, so tokenizer failures raise ConditionError.
+ * A blank expression is returned unchanged.
+ */
+export function remapRefs(expr: string, prefix: string): string {
+  if (expr.trim() === "") return expr;
+  const toks = tokenize(expr);
+  const positions: number[] = [];
+  for (let k = 0; k < toks.length; k++) {
+    const root = toks[k];
+    const prev = toks[k - 1];
+    if (
+      root.kind === "ident" &&
+      prev?.kind !== "dot" &&
+      (root.value === "agent" || root.value === "gate")
+    ) {
+      const dot = toks[k + 1];
+      const id = toks[k + 2];
+      if (dot?.kind === "dot" && id?.kind === "ident") {
+        positions.push(id.pos);
+      } else if (dot?.kind === "dot") {
+        throw new ConditionError(`expected identifier after '.' at ${id?.pos ?? dot.pos + 1}`);
+      }
+    }
+  }
+  let out = expr;
+  for (const pos of positions.sort((a, b) => b - a)) {
+    out = out.slice(0, pos) + prefix + out.slice(pos);
+  }
+  return out;
 }
 
 export class ConditionError extends Error {
@@ -119,6 +152,11 @@ function tokenize(src: string): Token[] {
     if (/[0-9]/.test(c)) {
       let j = i + 1;
       while (j < src.length && /[0-9_]/.test(src[j])) j++;
+      // Optional fractional part: a '.' immediately followed by a digit.
+      if (src[j] === "." && /[0-9]/.test(src[j + 1] ?? "")) {
+        j++; // consume '.'
+        while (j < src.length && /[0-9_]/.test(src[j])) j++;
+      }
       out.push({ kind: "num", value: src.slice(i, j).replace(/_/g, ""), pos: i });
       i = j;
       continue;
@@ -149,6 +187,28 @@ type Node =
   | { type: "cmp"; op: string; left: Node; right: Node }
   | { type: "lit"; value: ConditionValue }
   | { type: "ref"; path: string[] };
+
+const astCache = new Map<string, Node>();
+
+function compile(expr: string): Node {
+  const cached = astCache.get(expr);
+  if (cached) return cached;
+  const parser = new Parser(tokenize(expr));
+  const ast = parser.parseExpr();
+  parser.expect("eof");
+  astCache.set(expr, ast);
+  return ast;
+}
+
+/** Test-only: current number of cached expression ASTs. */
+export function __conditionCacheSize(): number {
+  return astCache.size;
+}
+
+/** Test-only: reset the compiled-AST cache. */
+export function __clearConditionCache(): void {
+  astCache.clear();
+}
 
 class Parser {
   private i = 0;

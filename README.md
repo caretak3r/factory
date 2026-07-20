@@ -265,7 +265,7 @@ pipelines/
   security-base.yaml       Reusable security block (consumed via import:)
   conditional-review.yaml  Demo using import + when + gossip + memory
 test/
-  *.test.ts                137 tests across 18 files
+  *.test.ts                137 tests across 16 files
 ```
 
 ## Status

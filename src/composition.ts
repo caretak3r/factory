@@ -1,5 +1,6 @@
 import type { PipelineConfig, PipelineStep, AgentConfig } from "./types";
 import { parsePipelineYaml } from "./schema";
+import { remapRefs } from "./conditional";
 
 export interface ImportLookup {
   /** Returns the raw YAML for a pipeline name, or null if not found. */
@@ -27,6 +28,9 @@ export async function resolveImports(
   const newAgents: AgentConfig[] = [...parent.agents];
   const newSteps: PipelineStep[] = [];
   const knownAgentIds = new Set(parent.agents.map((a) => a.id));
+  const knownStepNames = new Set(
+    parent.pipeline.filter((s) => !s.import).map((s) => s.step)
+  );
 
   for (const step of parent.pipeline) {
     if (!step.import) {
@@ -77,7 +81,14 @@ export async function resolveImports(
 
     // Namespace and append sub-pipeline steps
     for (const subStep of sub.pipeline) {
-      newSteps.push(namespaceStep(subStep, prefix));
+      const ns = namespaceStep(subStep, prefix);
+      if (knownStepNames.has(ns.step)) {
+        throw new CompositionError(
+          `step name collision after import: "${ns.step}" (from import "${step.import}")`
+        );
+      }
+      knownStepNames.add(ns.step);
+      newSteps.push(ns);
     }
   }
 
@@ -91,5 +102,6 @@ function namespaceStep(step: PipelineStep, prefix: string): PipelineStep {
     agent: step.agent ? `${prefix}${step.agent}` : undefined,
     agents: step.agents ? step.agents.map((a) => `${prefix}${a}`) : undefined,
     inputs: step.inputs ? step.inputs.map((i) => `${prefix}${i}`) : undefined,
+    when: step.when ? remapRefs(step.when, prefix) : undefined,
   };
 }

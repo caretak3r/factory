@@ -1,8 +1,15 @@
 import { Hono } from "hono";
-import type { Env, DispatchMessage, ResultMessage } from "./types";
+import type {
+  Env,
+  DispatchMessage,
+  ResultMessage,
+  FailureMessage,
+} from "./types";
 import { parsePipelineYaml, validatePipelineConfig } from "./schema";
 import { ui } from "./ui";
 import { streamRun } from "./sse";
+import { resolveArtifactKey } from "./tools/sandbox";
+import { getSupervisor, getAgent, getBreaker, writeRunIndex } from "./do-stubs";
 
 export { Agent } from "./agent";
 export { Supervisor } from "./supervisor";
@@ -59,10 +66,8 @@ app.post("/api/runs", async (c) => {
   }
 
   const runId = crypto.randomUUID();
-  const supervisorId = c.env.SUPERVISOR.idFromName(runId);
-  const supervisor = c.env.SUPERVISOR.get(supervisorId);
-
-  const result = await (supervisor as any).initializeRun({
+  const supervisor = getSupervisor(c.env, runId);
+  const result = await supervisor.initializeRun({
     runId,
     pipelineYaml: yaml,
     input: body.input,
@@ -73,10 +78,7 @@ app.post("/api/runs", async (c) => {
   }
 
   // Index the run in KV for listing
-  await c.env.PIPELINE_KV.put(
-    `run:${runId}`,
-    JSON.stringify({ pipeline: body.pipeline, created_at: new Date().toISOString(), status: "started" })
-  );
+  await writeRunIndex(c.env, runId, body.pipeline);
 
   return c.json({ run_id: runId, status: "started" }, 201);
 });
@@ -94,17 +96,13 @@ app.get("/api/runs", async (c) => {
 
 app.get("/api/runs/:id", async (c) => {
   const runId = c.req.param("id");
-  const supervisorId = c.env.SUPERVISOR.idFromName(runId);
-  const supervisor = c.env.SUPERVISOR.get(supervisorId);
-  const state = await (supervisor as any).getState();
+  const state = await getSupervisor(c.env, runId).getState();
   return c.json(state);
 });
 
 app.get("/api/runs/:id/events", async (c) => {
   const runId = c.req.param("id");
-  const supervisorId = c.env.SUPERVISOR.idFromName(runId);
-  const supervisor = c.env.SUPERVISOR.get(supervisorId);
-  const events = await (supervisor as any).getEvents();
+  const events = await getSupervisor(c.env, runId).getEvents();
   return c.json({ events });
 });
 
@@ -116,9 +114,7 @@ app.get("/api/runs/:id/stream", (c) => {
 
 app.get("/api/runs/:id/metrics", async (c) => {
   const runId = c.req.param("id");
-  const supervisorId = c.env.SUPERVISOR.idFromName(runId);
-  const supervisor = c.env.SUPERVISOR.get(supervisorId);
-  const metrics = await (supervisor as any).getMetrics();
+  const metrics = await getSupervisor(c.env, runId).getMetrics();
   return c.json(metrics);
 });
 
@@ -126,14 +122,23 @@ app.get("/api/circuit-breaker", async (c) => {
   if (!c.env.CIRCUIT_BREAKER) {
     return c.json({ error: "Circuit breaker not configured" }, 503);
   }
-  const breakerId = c.env.CIRCUIT_BREAKER.idFromName("global");
-  const breaker = c.env.CIRCUIT_BREAKER.get(breakerId);
-  const all = await (breaker as any).getAll();
+  const breaker = getBreaker(c.env);
+  const all = await breaker!.getAll();
   return c.json({ breakers: all });
 });
 
 app.get("/api/runs/:id/artifacts/:key{.+}", async (c) => {
-  const key = c.req.param("key");
+  const runId = c.req.param("id");
+  const requested = c.req.param("key");
+  let key: string;
+  try {
+    key = resolveArtifactKey(runId, requested);
+  } catch (e) {
+    return c.json(
+      { error: e instanceof Error ? e.message : "invalid artifact key" },
+      400
+    );
+  }
   const obj = await c.env.ARTIFACT_STORE.get(key);
   if (!obj) return c.json({ error: "Not found" }, 404);
   return c.text(await obj.text(), 200, { "Content-Type": "application/json" });
@@ -145,17 +150,22 @@ export default {
 
   async queue(batch: MessageBatch, env: Env) {
     for (const msg of batch.messages) {
-      const data = msg.body as DispatchMessage | ResultMessage | { type: string };
+      const data = msg.body as
+        | DispatchMessage
+        | ResultMessage
+        | FailureMessage
+        | { type: string };
 
       if (data.type === "dispatch") {
         const dispatch = data as DispatchMessage;
-        const agentDoId = env.AGENT.idFromName(
-          `${dispatch.envelope.pipeline_run}:${dispatch.envelope.to.agent}`
+        const agent = getAgent(
+          env,
+          dispatch.envelope.pipeline_run,
+          dispatch.envelope.to.agent
         );
-        const agent = env.AGENT.get(agentDoId);
 
         try {
-          await (agent as any).handleTask({
+          await agent.handleTask({
             runId: dispatch.envelope.pipeline_run,
             agentConfig: dispatch.agent_config,
             modelDefaults: dispatch.model_defaults,
@@ -172,16 +182,28 @@ export default {
         }
       } else if (data.type === "result") {
         const result = data as ResultMessage;
-        const supervisorId = env.SUPERVISOR.idFromName(
-          result.envelope.pipeline_run
-        );
-        const supervisor = env.SUPERVISOR.get(supervisorId);
 
         try {
-          await (supervisor as any).handleAgentCompletion(result.envelope);
+          await getSupervisor(env, result.envelope.pipeline_run).handleAgentCompletion(
+            result.envelope
+          );
           msg.ack();
         } catch (e) {
           console.error(`Supervisor completion handling failed: ${e}`);
+          msg.retry();
+        }
+      } else if (data.type === "failure") {
+        const failure = data as FailureMessage;
+
+        try {
+          await getSupervisor(env, failure.run_id).handleAgentFailure(
+            failure.agent_id,
+            failure.error,
+            { retryCount: failure.retry_count }
+          );
+          msg.ack();
+        } catch (e) {
+          console.error(`Supervisor failure handling failed: ${e}`);
           msg.retry();
         }
       } else {

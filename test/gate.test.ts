@@ -71,7 +71,7 @@ describe("evaluateGate", () => {
     expect(result.reason).toContain("Token");
   });
 
-  it("returns pass for unknown condition (permissive default)", () => {
+  it("fails closed for an unknown condition", () => {
     const gate: PipelineStep = {
       step: "unknown-gate",
       type: "gate",
@@ -79,6 +79,7 @@ describe("evaluateGate", () => {
     };
 
     const result = evaluateGate(gate, [], {}, { max_tokens: 100000, max_duration_ms: 300000, max_retries: 6 });
-    expect(result.pass).toBe(true);
+    expect(result.pass).toBe(false);
+    expect(result.reason).toContain("Unknown gate condition");
   });
 });

@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import type { Env, DagState, PipelineEvent } from "../types";
+import type { Env } from "../types";
+import { getSupervisor, writeRunIndex } from "../do-stubs";
 import { page } from "./layouts";
 import {
   home,
@@ -36,10 +37,9 @@ ui.get("/runs", async (c) => {
 
 ui.get("/runs/:id", async (c) => {
   const runId = c.req.param("id");
-  const supId = c.env.SUPERVISOR.idFromName(runId);
-  const sup = c.env.SUPERVISOR.get(supId);
-  const dag = (await (sup as any).getState()) as DagState;
-  const events = (await (sup as any).getEvents()) as PipelineEvent[];
+  const sup = getSupervisor(c.env, runId);
+  const dag = await sup.getState();
+  const events = await sup.getEvents();
   return c.html(page({ title: `Run ${runId.slice(0, 8)}`, body: runDetail(runId, dag, events) }));
 });
 
@@ -60,9 +60,7 @@ ui.get("/pipelines/:name", async (c) => {
 
 ui.get("/ui/runs/:id/dag", async (c) => {
   const runId = c.req.param("id");
-  const supId = c.env.SUPERVISOR.idFromName(runId);
-  const sup = c.env.SUPERVISOR.get(supId);
-  const dag = (await (sup as any).getState()) as DagState;
+  const dag = await getSupervisor(c.env, runId).getState();
   return c.html(dagMermaid(dag));
 });
 
@@ -80,8 +78,7 @@ ui.post("/ui/runs/start", async (c) => {
   if (!yaml) return c.html(`<p style="color:#ff7a7a">Pipeline not found</p>`);
 
   const runId = crypto.randomUUID();
-  const supervisor = c.env.SUPERVISOR.get(c.env.SUPERVISOR.idFromName(runId));
-  const result = await (supervisor as any).initializeRun({
+  const result = await getSupervisor(c.env, runId).initializeRun({
     runId,
     pipelineYaml: yaml,
     input,
@@ -90,10 +87,7 @@ ui.post("/ui/runs/start", async (c) => {
   if (!result.success) {
     return c.html(`<p style="color:#ff7a7a">Error: ${String(result.error)}</p>`);
   }
-  await c.env.PIPELINE_KV.put(
-    `run:${runId}`,
-    JSON.stringify({ pipeline, created_at: new Date().toISOString(), status: "started" })
-  );
+  await writeRunIndex(c.env, runId, pipeline);
   return c.html(
     `<p style="color:#3ad28b">Started run <a href="/runs/${runId}">${runId}</a></p>`
   );
