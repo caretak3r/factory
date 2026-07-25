@@ -30,6 +30,9 @@ docs/superpowers/
 # ── Operator-local pipelines (reference absolute paths on one machine) ──
 pipelines/hip-0025-review.yaml
 
+# ── Session scratch (checkpoint state, not part of the product) ──
+context-log.md
+
 # Agent-harness instructions (beads boilerplate, unfilled placeholders — local only)
 CLAUDE.md
 AGENTS.md
