@@ -1,54 +1,46 @@
 /**
- * Deterministic ReDoS guard for the model-controlled `grep` tool (SECURITY-02).
+ * ReDoS guard for the model-controlled `grep` tool (SECURITY-02).
  *
  * Threat model: the regex pattern and flags come from LLM output (and are
  * therefore steerable via prompt injection — see SECURITY-03). A catastrophic-
  * backtracking pattern executed synchronously blocks the Workers isolate;
  * `withTimeout` in sandbox.ts is a Promise.race and cannot interrupt sync CPU.
  *
- * Strategy — deterministic bounds rather than "evil regex" detection:
+ * Strategy — linear-time execution, plus deterministic bounds as defense-in-depth:
  *
- *  1. `vetGrepPattern` syntactically rejects every construct that enables
- *     exponential backtracking in V8's engine: quantifiers applied to groups
- *     (`(...)+`, `(a+)+`), alternation INSIDE a group (`(a|a)`, `(.|.)` — a
- *     chain of these stacks to 2^k choice points with no quantifier at all),
- *     backreferences (`\1`, `\k<n>`), lookbehind, and lookahead. Top-level
- *     alternation (`TODO|FIXME`) is linear and stays allowed. It also caps length
- *     and the number of VARIABLE-WIDTH
- *     quantifiers (`*`, `+`, `{m,}`, and any `{m,n}` range — a `{0,50}`
- *     backtracks like `.*`), bounding the residual polynomial family
- *     (`a*a*a*b`, `.{0,50}.{0,50}...`) to degree <= MAX_GREP_VARIABLE_QUANTIFIERS.
+ *  1. `compileLinearPattern` compiles the pattern with RE2JS (a JS port of
+ *     RE2's NFA simulation), which matches in O(input × pattern) with NO
+ *     backtracking — the entire catastrophic-backtracking class, including the
+ *     former residual `.+.?.?.?.?.?.{300}z` (~7.5s on one native `.test()` at
+ *     1024 chars, Node v26/V8; ~3ms under RE2JS), is structurally impossible.
+ *     RE2 also rejects backreferences and lookaround at compile time, so those
+ *     cannot execute even if the syntactic vet were bypassed.
  *
- *  2. `boundedGrepScan` hands the regex at most GREP_SEGMENT_LENGTH characters
- *     per `.test()` call and checks a wall-clock budget BETWEEN calls.
+ *  2. `vetGrepPattern` stays in front of the engine as defense-in-depth: it
+ *     rejects quantified groups, grouped alternation, backreferences, and
+ *     lookaround, and caps pattern length and variable-width quantifier count.
+ *     Its job today is to keep the guarantees independent of the engine choice
+ *     — if the execution path ever regresses to a backtracking engine, the vet
+ *     again removes the worst (13-84s) construct families on its own.
  *
- * PARTIAL MITIGATION — read before trusting this. Syntactic vetting cannot fully
- * bound a backtracking engine, and this guard does NOT. It rejects the worst
- * families (>1 variable-width quantifier, quantified/alternation groups,
- * lookahead/lookbehind, backrefs), but a single ACCEPTED pattern that combines
- * one greedy quantifier + an optional chain + a large fixed `{n}` tail — e.g.
- * `.+.?.?.?.?.?.{300}z` — still blocks ONE synchronous `.test()` for several
- * seconds (measured ~7.5s at 1024 chars, Node v26/V8). The budget is checked
- * only between lines, so it cannot interrupt that single call. Eliminating this
- * residual requires a linear-time engine (RE2) or genuinely interruptible
- * execution — see the SECURITY-02 follow-up. What this guard buys today: it
- * removes the 13-84s families and every construct-level exponential blowup.
+ *  3. `boundedGrepScan` hands the matcher at most GREP_SEGMENT_LENGTH
+ *     characters per `.test()` call and checks a wall-clock budget BETWEEN
+ *     calls, bounding total scan time and match-count output.
  *
  * Pure module — no I/O — unit-tested in test/grep-guard.test.ts.
  */
+
+import { RE2JS } from "re2js";
 
 export const MAX_GREP_PATTERN_LENGTH = 128;
 export const MAX_GREP_PATTERN_QUANTIFIERS = 8;
 /**
  * Max VARIABLE-WIDTH quantifiers (`*`, `+`, `{m,}`, and ANY `{m,n}` range) in
- * one pattern. Kept at 1 (not 2) because it strictly LOWERS the residual worst
- * case, not because it makes the guard safe: at 2, `.*.*.{500}z` blocks a single
- * `.test()` ~84s; at 1 the worst known accepted pattern (`.+.?.?.?.?.?.{300}z`)
- * blocks ~7.5s. A lone greedy `.+`/`.*` plus the engine's unanchored
- * start-position retry ALREADY yields O(n^2); an optional chain (2^k) and a
- * fixed `{n}` tail (O(n) rescan) multiply it further. This cap is a mitigation
- * — the residual is only removed by a linear-time engine or interruptible
- * execution (SECURITY-02 follow-up), never by syntactic degree analysis.
+ * one pattern. Execution is linear-time (RE2JS), so this cap no longer bounds
+ * the worst case — it exists as defense-in-depth for a hypothetical regression
+ * to a backtracking engine, where at 2 variables `.*.*.{500}z` blocks a single
+ * native `.test()` ~84s and at 1 the worst accepted pattern
+ * (`.+.?.?.?.?.?.{300}z`) blocks ~7.5s (Node v26/V8, 1024 chars).
  */
 export const MAX_GREP_VARIABLE_QUANTIFIERS = 1;
 /** Max characters handed to a single RegExp.test() call. */
@@ -179,6 +171,36 @@ export function vetGrepPattern(pattern: string): PatternVerdict {
   return { ok: true };
 }
 
+/**
+ * Minimal stateless matcher contract for boundedGrepScan. `test` must not
+ * carry state between calls (a native /g RegExp's lastIndex violates this —
+ * production always passes the RE2JS-backed matcher from compileLinearPattern).
+ */
+export interface LineMatcher {
+  test(segment: string): boolean;
+}
+
+/** Flags accepted by the grep tool. `g` and `u` are no-ops under RE2JS. */
+export const GREP_FLAGS_RE = /^[gimsu]*$/;
+
+/**
+ * Compile a model-supplied pattern with the linear-time RE2 engine.
+ * Throws RE2JSSyntaxException on invalid syntax — including backreferences and
+ * lookaround, which RE2 does not support (that rejection is a feature here).
+ * `g` is meaningless for per-segment boolean tests and `u` is RE2JS's default
+ * Unicode behavior; both are accepted for API compatibility and ignored.
+ */
+export function compileLinearPattern(pattern: string, flags: string): LineMatcher {
+  let f = 0;
+  if (flags.includes("i")) f |= RE2JS.CASE_INSENSITIVE;
+  if (flags.includes("m")) f |= RE2JS.MULTILINE;
+  if (flags.includes("s")) f |= RE2JS.DOTALL;
+  const re2 = RE2JS.compile(pattern, f);
+  return {
+    test: (segment: string) => re2.matcher(segment).find(),
+  };
+}
+
 export interface GrepScanOptions {
   segmentLength?: number;
   budgetMs?: number;
@@ -206,7 +228,7 @@ export interface GrepScanResult {
  */
 export function boundedGrepScan(
   text: string,
-  regex: RegExp,
+  matcher: LineMatcher,
   opts: GrepScanOptions = {}
 ): GrepScanResult {
   const segmentLength = opts.segmentLength ?? GREP_SEGMENT_LENGTH;
@@ -234,16 +256,14 @@ export function boundedGrepScan(
     const line = lines[i];
     let hit = false;
     if (line.length <= segmentLength) {
-      hit = regex.test(line);
-      regex.lastIndex = 0; // reset for /g flag across calls
+      hit = matcher.test(line);
     } else {
       for (let off = 0; off < line.length; off += segmentLength) {
         if (now() - start > budgetMs) {
           aborted = true;
           break outer;
         }
-        hit = regex.test(line.slice(off, off + segmentLength));
-        regex.lastIndex = 0;
+        hit = matcher.test(line.slice(off, off + segmentLength));
         if (hit) break;
       }
     }

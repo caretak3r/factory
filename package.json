@@ -25,6 +25,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.0",
     "hono": "^4.12.14",
+    "re2js": "^2.8.6",
     "yaml": "^2.8.3",
     "zod": "^4.3.6"
   },

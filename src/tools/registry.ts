@@ -1,7 +1,14 @@
 import type { Env } from "../types";
 import type { ToolDefinition } from "../anthropic";
 import { readScopedArtifact, withTimeout } from "./sandbox";
-import { vetGrepPattern, boundedGrepScan, MAX_GREP_MATCHES } from "./grep-guard";
+import {
+  vetGrepPattern,
+  compileLinearPattern,
+  boundedGrepScan,
+  GREP_FLAGS_RE,
+  MAX_GREP_MATCHES,
+  type LineMatcher,
+} from "./grep-guard";
 
 export interface ToolContext {
   runId: string;
@@ -41,8 +48,6 @@ const readArtifact: ToolHandler = async (input, ctx) => {
   }
 };
 
-const GREP_FLAGS_RE = /^[gimsu]*$/;
-
 const grepArtifact: ToolHandler = async (input, ctx) => {
   const path = String(input.path ?? "");
   const pattern = String(input.pattern ?? "");
@@ -60,9 +65,11 @@ const grepArtifact: ToolHandler = async (input, ctx) => {
       is_error: true,
     };
   }
-  let regex: RegExp;
+  let matcher: LineMatcher;
   try {
-    regex = new RegExp(pattern, flags || "g");
+    // Linear-time RE2 engine — a model-supplied pattern cannot backtrack
+    // (SECURITY-02); RE2 also rejects backrefs/lookaround at compile time.
+    matcher = compileLinearPattern(pattern, flags);
   } catch (e) {
     return { content: `invalid regex: ${e instanceof Error ? e.message : e}`, is_error: true };
   }
@@ -73,7 +80,7 @@ const grepArtifact: ToolHandler = async (input, ctx) => {
     return { content: e instanceof Error ? e.message : String(e), is_error: true };
   }
 
-  const scan = boundedGrepScan(text, regex);
+  const scan = boundedGrepScan(text, matcher);
   const notes: string[] = [];
   if (scan.capped) {
     notes.push(
@@ -123,12 +130,12 @@ const REGISTRY: Record<string, ToolEntry> = {
   grep: {
     definition: {
       name: "grep",
-      description: "Search a single run-scoped artifact for lines matching a regex. ReDoS guard: pattern max 128 chars; backreferences, lookbehind, and quantified groups are rejected.",
+      description: "Search a single run-scoped artifact for lines matching a regex (RE2 syntax, linear-time). Pattern max 128 chars; backreferences, lookaround, and quantified groups are rejected.",
       input_schema: {
         type: "object",
         properties: {
           path: { type: "string", description: "Artifact path under the run's scope" },
-          pattern: { type: "string", description: "Regular expression (max 128 chars; no quantified groups, backreferences, or lookbehind)" },
+          pattern: { type: "string", description: "Regular expression, RE2 syntax (max 128 chars; no quantified groups, backreferences, or lookaround)" },
           flags: { type: "string", description: "Regex flags (allowed: gimsu)" },
         },
         required: ["path", "pattern"],

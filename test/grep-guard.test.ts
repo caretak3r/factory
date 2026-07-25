@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   vetGrepPattern,
+  compileLinearPattern,
   boundedGrepScan,
   MAX_GREP_PATTERN_LENGTH,
 } from "../src/tools/grep-guard";
@@ -126,6 +127,40 @@ describe("grep-guard.vetGrepPattern", () => {
     expect(vetGrepPattern("(?!.*x)y").ok).toBe(false);
     // the specific bypass: one inner variable × the lookahead's n-position multiplier
     expect(vetGrepPattern("(?=.*.{500}x)z").ok).toBe(false);
+  });
+});
+
+describe("grep-guard.compileLinearPattern", () => {
+  it("matches like a regex engine and honors the i/s flags", () => {
+    expect(compileLinearPattern("gamma", "").test("GAMMA")).toBe(false);
+    expect(compileLinearPattern("gamma", "i").test("GAMMA")).toBe(true);
+    expect(compileLinearPattern("a.b", "").test("a\nb")).toBe(false);
+    expect(compileLinearPattern("a.b", "s").test("a\nb")).toBe(true);
+    expect(compileLinearPattern("TODO|FIXME", "g").test("a FIXME b")).toBe(true);
+  });
+
+  it("runs the former residual worst case in linear time (SECURITY-02)", () => {
+    // `.+.?.?.?.?.?.{300}z` passes vetGrepPattern (1 variable-width quantifier,
+    // 7 quantifiers total) and blocked one native RegExp.test() ~7.5s at 1024
+    // chars (Node v26/V8). Under RE2JS it measured ~3ms. The 1500ms bound is
+    // deliberately loose for CI jitter while still 5x under the native time.
+    const m = compileLinearPattern(".+.?.?.?.?.?.{300}z", "");
+    const t0 = Date.now();
+    const hit = m.test("a".repeat(1024));
+    expect(Date.now() - t0).toBeLessThan(1500);
+    expect(hit).toBe(false);
+  });
+
+  it("rejects backreferences and lookaround at compile time (below the vet)", () => {
+    // Even if vetGrepPattern were bypassed, RE2 has no backtracking constructs.
+    expect(() => compileLinearPattern("(a)\\1", "")).toThrow(/parsing regexp/);
+    expect(() => compileLinearPattern("(?=x)a", "")).toThrow(/parsing regexp/);
+    expect(() => compileLinearPattern("(?<=x)a", "")).toThrow(/parsing regexp/);
+  });
+
+  it("plugs into boundedGrepScan as the production matcher", () => {
+    const r = boundedGrepScan("alpha\nbeta\nGAMMA", compileLinearPattern("ga", "i"));
+    expect(r.matches).toEqual(["3: GAMMA"]);
   });
 });
 

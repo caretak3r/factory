@@ -189,6 +189,21 @@ describe("registry.runToolCall — grep", () => {
     expect(res.content).toContain("pattern rejected");
   });
 
+  it("executes a vet-accepted pathological pattern in linear time (SECURITY-02)", async () => {
+    // This exact pattern passes the syntactic vet and blocked one native
+    // RegExp.test() ~7.5s on this input pre-fix. Fails the 2s bound on any
+    // regression to a backtracking engine.
+    const ctx = ctxWith({ "runs/run-1/a.txt": "a".repeat(1024) });
+    const t0 = Date.now();
+    const res = await runToolCall(
+      { name: "grep", input: { path: "a.txt", pattern: ".+.?.?.?.?.?.{300}z" } },
+      ctx
+    );
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(res.is_error).toBeUndefined();
+    expect(res.content).toContain("no matches");
+  });
+
   it("rejects unsupported regex flags", async () => {
     const ctx = ctxWith({ "runs/run-1/a.txt": "x" });
     const res = await runToolCall(
