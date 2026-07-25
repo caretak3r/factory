@@ -1,6 +1,7 @@
 import { z } from "zod";
 import YAML from "yaml";
 import type { PipelineConfig } from "./types";
+import { isSafeKeySegment } from "./envelope";
 
 const ModelDefaultsSchema = z.object({
   planning: z.string(),
@@ -25,7 +26,12 @@ const AgentMemorySchema = z.object({
 });
 
 const AgentConfigSchema = z.object({
-  id: z.string().min(1),
+  id: z
+    .string()
+    .min(1)
+    .refine(isSafeKeySegment, {
+      message: "agent id must match ^[A-Za-z0-9._-]+$ and must not be only dots",
+    }),
   role: z.string().min(1),
   model: z.string().min(1),
   tools: z.array(z.string()).default([]),
@@ -94,10 +100,13 @@ type ParseResult =
   | { success: true; data: PipelineConfig }
   | { success: false; errors: string[] };
 
+/** Cap YAML alias expansion (billion-laughs guard, SECURITY-05). */
+const MAX_YAML_ALIAS_COUNT = 50;
+
 export function parsePipelineYaml(yamlString: string): ParseResult {
   let raw: unknown;
   try {
-    raw = YAML.parse(yamlString);
+    raw = YAML.parse(yamlString, { maxAliasCount: MAX_YAML_ALIAS_COUNT });
   } catch (e) {
     return { success: false, errors: [`YAML parse error: ${e}`] };
   }
@@ -118,6 +127,16 @@ export function parsePipelineYaml(yamlString: string): ParseResult {
 export function validatePipelineConfig(config: PipelineConfig): string[] {
   const errors: string[] = [];
   const agentIds = new Set(config.agents.map((a) => a.id));
+
+  // SECURITY-04: catch unsafe ids that bypass the Zod boundary — e.g. ids
+  // composed by `import:` resolution ("<step>__<id>" inherits step-name chars).
+  for (const agent of config.agents) {
+    if (!isSafeKeySegment(agent.id)) {
+      errors.push(
+        `Agent id "${agent.id}" contains unsafe characters (allowed: A-Za-z0-9._-)`
+      );
+    }
+  }
 
   for (const step of config.pipeline) {
     if (step.type === "gate") continue;
@@ -155,3 +174,12 @@ export function validatePipelineConfig(config: PipelineConfig): string[] {
 
   return errors;
 }
+
+// ─── Run-request boundary validation (SECURITY-05) ─
+
+export const RunRequestSchema = z.object({
+  pipeline: z.string().min(1),
+  input: z.unknown().optional(),
+});
+
+export type RunRequest = z.infer<typeof RunRequestSchema>;

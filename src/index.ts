@@ -5,7 +5,7 @@ import type {
   ResultMessage,
   FailureMessage,
 } from "./types";
-import { parsePipelineYaml, validatePipelineConfig } from "./schema";
+import { parsePipelineYaml, validatePipelineConfig, RunRequestSchema } from "./schema";
 import { ui } from "./ui";
 import { streamRun } from "./sse";
 import { resolveArtifactKey } from "./tools/sandbox";
@@ -17,6 +17,14 @@ export { CircuitBreaker } from "./circuit-breaker";
 
 const app = new Hono<{ Bindings: Env }>();
 
+// ─── Request-body caps (SECURITY-05) ───────────────
+const MAX_PIPELINE_YAML_BYTES = 256 * 1024;
+const MAX_RUN_BODY_BYTES = 512 * 1024;
+
+function byteLengthUtf8(s: string): number {
+  return new TextEncoder().encode(s).byteLength;
+}
+
 // Mount the dashboard UI at the root (also handles /ui/* HTMX partials)
 app.route("/", ui);
 
@@ -25,7 +33,14 @@ app.get("/api/health", (c) => c.json({ status: "ok", service: "agentx-factory" }
 
 // ─── Pipeline CRUD ─────────────────────────────────
 app.post("/api/pipelines", async (c) => {
+  const declared = Number(c.req.header("content-length") ?? "0");
+  if (declared > MAX_PIPELINE_YAML_BYTES) {
+    return c.json({ error: `Request body too large (max ${MAX_PIPELINE_YAML_BYTES} bytes)` }, 413);
+  }
   const body = await c.req.text();
+  if (byteLengthUtf8(body) > MAX_PIPELINE_YAML_BYTES) {
+    return c.json({ error: `Request body too large (max ${MAX_PIPELINE_YAML_BYTES} bytes)` }, 413);
+  }
   const parsed = parsePipelineYaml(body);
   if (!parsed.success) {
     return c.json({ error: "Invalid YAML", details: parsed.errors }, 400);
@@ -59,7 +74,31 @@ app.delete("/api/pipelines/:name", async (c) => {
 
 // ─── Pipeline Runs ─────────────────────────────────
 app.post("/api/runs", async (c) => {
-  const body = await c.req.json<{ pipeline: string; input: unknown }>();
+  const declared = Number(c.req.header("content-length") ?? "0");
+  if (declared > MAX_RUN_BODY_BYTES) {
+    return c.json({ error: `Request body too large (max ${MAX_RUN_BODY_BYTES} bytes)` }, 413);
+  }
+  const raw = await c.req.text();
+  if (byteLengthUtf8(raw) > MAX_RUN_BODY_BYTES) {
+    return c.json({ error: `Request body too large (max ${MAX_RUN_BODY_BYTES} bytes)` }, 413);
+  }
+  let parsedBody: unknown;
+  try {
+    parsedBody = JSON.parse(raw);
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+  const parsed = RunRequestSchema.safeParse(parsedBody);
+  if (!parsed.success) {
+    return c.json(
+      {
+        error: "Invalid run request",
+        details: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
+      },
+      400
+    );
+  }
+  const body = parsed.data;
   const yaml = await c.env.PIPELINE_KV.get(`pipeline:${body.pipeline}`);
   if (!yaml) {
     return c.json({ error: `Pipeline "${body.pipeline}" not found` }, 404);

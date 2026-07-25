@@ -1,11 +1,35 @@
 import { describe, it, expect } from "vitest";
-import { createDispatchEnvelope, createResultEnvelope, artifactKey } from "../src/envelope";
+import { createDispatchEnvelope, createResultEnvelope, artifactKey, inputKey } from "../src/envelope";
 
 describe("envelope", () => {
   describe("artifactKey", () => {
     it("builds R2 key from run ID and agent role", () => {
       const key = artifactKey("run-123", "security");
       expect(key).toBe("runs/run-123/agents/security/output.json");
+    });
+
+    it("accepts composed and dotted ids", () => {
+      expect(artifactKey("run-1", "sec-review__scanner")).toBe(
+        "runs/run-1/agents/sec-review__scanner/output.json"
+      );
+      expect(artifactKey("run-1", "agent.v2")).toBe(
+        "runs/run-1/agents/agent.v2/output.json"
+      );
+    });
+
+    it("rejects an agent role containing a path separator", () => {
+      expect(() => artifactKey("run-1", "a/b")).toThrow(/unsafe key segment/);
+    });
+
+    it("rejects dots-only and empty segments", () => {
+      expect(() => artifactKey("run-1", "..")).toThrow(/unsafe key segment/);
+      expect(() => artifactKey("run-1", "")).toThrow(/unsafe key segment/);
+    });
+  });
+
+  describe("inputKey", () => {
+    it("rejects a runId containing a slash", () => {
+      expect(() => inputKey("run/../x")).toThrow(/unsafe key segment/);
     });
   });
 

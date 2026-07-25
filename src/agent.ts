@@ -16,6 +16,7 @@ import {
   type ToolDefinition,
 } from "./anthropic";
 import { runToolCall, toolDefinitionsFor, type ToolContext } from "./tools/registry";
+import { assembleUserInput, type UntrustedSection } from "./prompt-fence";
 
 export interface TaskParams {
   runId: string;
@@ -89,8 +90,11 @@ export class Agent extends DurableObject<Env> {
     );
 
     try {
-      // Pull input artifacts from R2
-      const inputParts: string[] = [];
+      // Pull input artifacts from R2. Every non-operator-authored piece of
+      // content (prior-run summaries, peer artifacts, run input / upstream
+      // artifacts) is fenced as untrusted data before prompt assembly
+      // (SECURITY-03). The system prompt (agent role) stays trusted and bare.
+      const sections: UntrustedSection[] = [];
 
       // Cross-run memory — prepend prior-run summaries if provided
       if (params.priorRuns && params.priorRuns.length > 0) {
@@ -102,7 +106,10 @@ export class Agent extends DurableObject<Env> {
               `agents_completed=${r.agents_completed} agents_failed=${r.agents_failed}`
           )
           .join("\n");
-        inputParts.push(`# Prior runs of this pipeline\n${summary}`);
+        sections.push({
+          source: "prior-runs",
+          body: `# Prior runs of this pipeline\n${summary}`,
+        });
       }
 
       // Gossip — peer artifacts the supervisor authorized
@@ -110,20 +117,22 @@ export class Agent extends DurableObject<Env> {
         const peerTexts = await Promise.all(
           params.peers.map(async (peer) => {
             const obj = await this.env.ARTIFACT_STORE.get(peer.artifact_ref);
-            return obj ? `# Peer agent: ${peer.agent_id}\n${await obj.text()}` : null;
+            return obj
+              ? { source: `peer:${peer.agent_id}`, body: await obj.text() }
+              : null;
           })
         );
-        for (const t of peerTexts) if (t !== null) inputParts.push(t);
+        for (const t of peerTexts) if (t !== null) sections.push(t);
       }
 
       const inputTexts = await Promise.all(
         params.inputRefs.map(async (ref) => {
           const obj = await this.env.ARTIFACT_STORE.get(ref);
-          return obj ? await obj.text() : null;
+          return obj ? { source: `input:${ref}`, body: await obj.text() } : null;
         })
       );
-      for (const t of inputTexts) if (t !== null) inputParts.push(t);
-      const input = inputParts.join("\n\n---\n\n");
+      for (const t of inputTexts) if (t !== null) sections.push(t);
+      const input = assembleUserInput(sections);
 
       const { system } = buildPrompt(params.agentConfig, input);
       const model = resolveModel(params.agentConfig.model, params.modelDefaults);

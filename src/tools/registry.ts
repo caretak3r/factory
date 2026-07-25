@@ -1,6 +1,7 @@
 import type { Env } from "../types";
 import type { ToolDefinition } from "../anthropic";
 import { readScopedArtifact, withTimeout } from "./sandbox";
+import { vetGrepPattern, boundedGrepScan, MAX_GREP_MATCHES } from "./grep-guard";
 
 export interface ToolContext {
   runId: string;
@@ -40,12 +41,24 @@ const readArtifact: ToolHandler = async (input, ctx) => {
   }
 };
 
+const GREP_FLAGS_RE = /^[gimsu]*$/;
+
 const grepArtifact: ToolHandler = async (input, ctx) => {
   const path = String(input.path ?? "");
   const pattern = String(input.pattern ?? "");
   const flags = typeof input.flags === "string" ? input.flags : "";
   if (!path || !pattern) {
     return { content: "missing required fields: path, pattern", is_error: true };
+  }
+  const verdict = vetGrepPattern(pattern);
+  if (!verdict.ok) {
+    return { content: `pattern rejected: ${verdict.reason}`, is_error: true };
+  }
+  if (!GREP_FLAGS_RE.test(flags)) {
+    return {
+      content: `unsupported regex flags: "${flags}" (allowed: gimsu)`,
+      is_error: true,
+    };
   }
   let regex: RegExp;
   try {
@@ -60,19 +73,23 @@ const grepArtifact: ToolHandler = async (input, ctx) => {
     return { content: e instanceof Error ? e.message : String(e), is_error: true };
   }
 
-  const lines = text.split("\n");
-  const matches: string[] = [];
-  lines.forEach((line, i) => {
-    if (regex.test(line)) matches.push(`${i + 1}: ${line}`);
-    regex.lastIndex = 0; // reset for /g flag across lines
-  });
-  return {
-    content:
-      matches.length === 0
-        ? `(no matches for /${pattern}/${flags} in ${path})`
-        : matches.slice(0, 200).join("\n") +
-          (matches.length > 200 ? `\n[+${matches.length - 200} more]` : ""),
-  };
+  const scan = boundedGrepScan(text, regex);
+  const notes: string[] = [];
+  if (scan.capped) {
+    notes.push(
+      `[match cap ${MAX_GREP_MATCHES} reached; stopped after line ${scan.scannedLines} of ${scan.totalLines}]`
+    );
+  }
+  if (scan.aborted) {
+    notes.push(
+      `[grep time budget exceeded; scanned ${scan.scannedLines} of ${scan.totalLines} lines]`
+    );
+  }
+  const suffix = notes.length > 0 ? "\n" + notes.join("\n") : "";
+  if (scan.matches.length === 0) {
+    return { content: `(no matches for /${pattern}/${flags} in ${path})` + suffix };
+  }
+  return { content: scan.matches.join("\n") + suffix };
 };
 
 const semgrepStub: ToolHandler = async (input) => ({
@@ -106,13 +123,13 @@ const REGISTRY: Record<string, ToolEntry> = {
   grep: {
     definition: {
       name: "grep",
-      description: "Search a single run-scoped artifact for lines matching a regex.",
+      description: "Search a single run-scoped artifact for lines matching a regex. ReDoS guard: pattern max 128 chars; backreferences, lookbehind, and quantified groups are rejected.",
       input_schema: {
         type: "object",
         properties: {
           path: { type: "string", description: "Artifact path under the run's scope" },
-          pattern: { type: "string", description: "Regular expression" },
-          flags: { type: "string", description: "Regex flags (e.g. 'gi')" },
+          pattern: { type: "string", description: "Regular expression (max 128 chars; no quantified groups, backreferences, or lookbehind)" },
+          flags: { type: "string", description: "Regex flags (allowed: gimsu)" },
         },
         required: ["path", "pattern"],
       },

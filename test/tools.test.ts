@@ -169,6 +169,35 @@ describe("registry.runToolCall — grep", () => {
     expect(res.is_error).toBe(true);
     expect(res.content).toContain("invalid regex");
   });
+  it("rejects a catastrophic backtracking pattern", async () => {
+    const ctx = ctxWith({ "runs/run-1/a.txt": "aaaa" });
+    const res = await runToolCall(
+      { name: "grep", input: { path: "a.txt", pattern: "(a+)+$" } },
+      ctx
+    );
+    expect(res.is_error).toBe(true);
+    expect(res.content).toContain("pattern rejected");
+  });
+
+  it("rejects an overlong pattern", async () => {
+    const ctx = ctxWith({ "runs/run-1/a.txt": "x" });
+    const res = await runToolCall(
+      { name: "grep", input: { path: "a.txt", pattern: "a".repeat(200) } },
+      ctx
+    );
+    expect(res.is_error).toBe(true);
+    expect(res.content).toContain("pattern rejected");
+  });
+
+  it("rejects unsupported regex flags", async () => {
+    const ctx = ctxWith({ "runs/run-1/a.txt": "x" });
+    const res = await runToolCall(
+      { name: "grep", input: { path: "a.txt", pattern: "x", flags: "y" } },
+      ctx
+    );
+    expect(res.is_error).toBe(true);
+    expect(res.content).toContain("unsupported regex flags");
+  });
 });
 
 describe("registry.runToolCall — unknown tool", () => {

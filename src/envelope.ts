@@ -1,12 +1,35 @@
 import type { HandoffEnvelope } from "./types";
 
+/**
+ * R2 key-segment charset authority (SECURITY-04). Every value interpolated
+ * into an R2 key must be non-empty, drawn from [A-Za-z0-9._-], and must not
+ * consist solely of dots. schema.ts enforces the same rule on agent ids at
+ * the config boundary; validatePipelineConfig re-checks post-`import:`
+ * composed ids (step-prefix + "__" + id).
+ */
+export const SAFE_KEY_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
+
+export function isSafeKeySegment(value: string): boolean {
+  return SAFE_KEY_SEGMENT_RE.test(value) && !/^\.+$/.test(value);
+}
+
+function assertSafeKeySegment(label: string, value: string): void {
+  if (!isSafeKeySegment(value)) {
+    throw new Error(`unsafe key segment for ${label}: "${value}"`);
+  }
+}
+
 export function artifactKey(runId: string, agentRole: string): string {
+  assertSafeKeySegment("runId", runId);
+  assertSafeKeySegment("agentRole", agentRole);
   return `runs/${runId}/agents/${agentRole}/output.json`;
 }
 
 export function inputKey(runId: string): string {
+  assertSafeKeySegment("runId", runId);
   return `runs/${runId}/input.json`;
 }
+
 
 interface DispatchEnvelopeParams {
   runId: string;
