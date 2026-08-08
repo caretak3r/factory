@@ -11,6 +11,7 @@ import type {
   HandoffEnvelope,
   DispatchMessage,
   RunMetrics,
+  AgentStatus,
 } from "./types";
 import { parsePipelineYaml, validatePipelineConfig } from "./schema";
 import { evaluateGate } from "./gate";
@@ -32,6 +33,36 @@ export interface InitResult {
   success: boolean;
   runId?: string;
   error?: string;
+}
+
+/** A completion/failure delta must be applied only on the first terminal
+ *  transition. Redelivered queue messages hit an already-terminal node and
+ *  must be ignored. */
+export function isFreshTransition(status: AgentStatus): boolean {
+  return status !== "completed" && status !== "failed";
+}
+
+export function isCurrentAttempt(
+  signalRetryCount: unknown,
+  nodeRetryCount: number
+): boolean {
+  return signalRetryCount === nodeRetryCount;
+}
+
+/** Agents of the nearest preceding non-gate step, walking back from
+ *  `beforeIndex`. Used to evaluate a gate against the step that actually
+ *  produced agents, skipping any intervening gate steps. Empty when no such
+ *  step exists (e.g. a gate is the first pipeline step). */
+export function precedingStepAgents(
+  steps: PipelineStep[],
+  beforeIndex: number
+): string[] {
+  for (let i = beforeIndex - 1; i >= 0; i--) {
+    const s = steps[i];
+    if (!s || s.type === "gate") continue;
+    return s.agents ?? (s.agent ? [s.agent] : []);
+  }
+  return [];
 }
 
 export class Supervisor extends DurableObject<Env> {
@@ -65,6 +96,9 @@ export class Supervisor extends DurableObject<Env> {
       "INSERT OR REPLACE INTO dag_state (key, value) VALUES ('dag', ?)",
       JSON.stringify(this.dag)
     );
+  }
+
+  private saveConfig() {
     this.ctx.storage.sql.exec(
       "INSERT OR REPLACE INTO dag_state (key, value) VALUES ('config', ?)",
       JSON.stringify(this.config)
@@ -187,6 +221,7 @@ export class Supervisor extends DurableObject<Env> {
 
     this.dag.status = "dispatching";
     this.saveDag();
+    this.saveConfig();
 
     await this.dispatchCurrentStep();
 
@@ -204,6 +239,8 @@ export class Supervisor extends DurableObject<Env> {
     }
 
     if (step.type === "gate") {
+      const prevAgents = precedingStepAgents(this.dag.steps, this.dag.current_step);
+      if (!this.applyGate(step, prevAgents)) return; // gate failed → stop advancing
       this.dag.current_step++;
       this.saveDag();
       await this.dispatchCurrentStep();
@@ -372,6 +409,11 @@ export class Supervisor extends DurableObject<Env> {
     const node = this.dag.nodes[agentId];
     if (!node) return;
 
+    if (!isFreshTransition(node.status)) return; // idempotent: already terminal
+    if (!isCurrentAttempt(envelope.metadata.retry_count, node.retry_count)) {
+      return;
+    }
+
     node.status = "completed";
     node.artifact_ref = envelope.artifact_ref;
     node.tokens_used = envelope.metadata.tokens_used;
@@ -406,6 +448,47 @@ export class Supervisor extends DurableObject<Env> {
   }
 
   /**
+   * Evaluate one gate step and apply its outcome to run status. Returns true if
+   * the run may proceed past the gate, false if the gate failed (status set to
+   * "failed" or, when escalation is configured, "awaiting_human"; the caller
+   * must stop advancing). Logs `gate_eval` (always) and `escalation` (on a
+   * failed gate with escalation configured), matching prior behaviour.
+   */
+  private applyGate(
+    gateStep: PipelineStep,
+    previousStepAgents: string[]
+  ): boolean {
+    if (!this.dag || !this.config) return false;
+    const gateResult = evaluateGate(
+      gateStep,
+      previousStepAgents,
+      this.dag.nodes,
+      this.config.budget
+    );
+    this.logEvent("gate_eval", null, {
+      gate: gateStep.step,
+      pass: gateResult.pass,
+      reason: gateResult.reason,
+    });
+    if (gateResult.pass) return true;
+
+    const esc = this.config.recovery.escalation;
+    if (esc) {
+      this.dag.status = "awaiting_human";
+      this.logEvent("escalation", null, {
+        reason: "gate_fail",
+        gate: gateStep.step,
+        channel: esc.channel,
+        target: esc.target,
+      });
+    } else {
+      this.dag.status = "failed";
+    }
+    this.saveDag();
+    return false;
+  }
+
+  /**
    * If every agent in the current step has reached a terminal state
    * (completed or failed), evaluate the next gate and advance.
    */
@@ -436,37 +519,7 @@ export class Supervisor extends DurableObject<Env> {
 
     const nextStep = this.dag.steps[this.dag.current_step];
     if (nextStep?.type === "gate") {
-      const gateResult = evaluateGate(
-        nextStep,
-        stepAgents,
-        this.dag.nodes,
-        this.config.budget
-      );
-      this.logEvent("gate_eval", null, {
-        gate: nextStep.step,
-        pass: gateResult.pass,
-        reason: gateResult.reason,
-      });
-
-      if (!gateResult.pass) {
-        // Honour escalation if configured for gate failure.
-        const esc = this.config.recovery.escalation;
-        if (esc) {
-          this.dag.status = "awaiting_human";
-          this.logEvent("escalation", null, {
-            reason: "gate_fail",
-            gate: nextStep.step,
-            channel: esc.channel,
-            target: esc.target,
-          });
-          this.saveDag();
-          return;
-        }
-        this.dag.status = "failed";
-        this.saveDag();
-        return;
-      }
-
+      if (!this.applyGate(nextStep, stepAgents)) return; // failed/awaiting → stop
       this.dag.current_step++;
     }
 
@@ -496,7 +549,7 @@ export class Supervisor extends DurableObject<Env> {
   async handleAgentFailure(
     agentId: string,
     error: string,
-    opts: { skipBreaker?: boolean } = {}
+    opts: { skipBreaker?: boolean; retryCount?: number } = {}
   ) {
     this.initSchema();
     if (!this.dag && !this.loadDag()) return;
@@ -504,6 +557,13 @@ export class Supervisor extends DurableObject<Env> {
 
     const node = this.dag.nodes[agentId];
     if (!node) return;
+
+    if (!opts.skipBreaker && !isCurrentAttempt(opts.retryCount, node.retry_count)) {
+      return;
+    }
+    if (!opts.skipBreaker && !isFreshTransition(node.status)) {
+      return; // idempotent: already terminal
+    }
 
     node.status = "failed";
     node.error = error;

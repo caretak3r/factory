@@ -21,7 +21,7 @@ node --version        # should print 20.x or higher
 
 ```bash
 npm install
-npx vitest run        # should print "Tests 137 passed"
+npx vitest run        # should print "Tests 231 passed"
 ```
 
 If tests fail before you've changed anything, stop here and open an issue.

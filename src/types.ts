@@ -284,3 +284,12 @@ export interface ResultMessage {
   envelope: HandoffEnvelope;
   supervisor_do_id: string;
 }
+
+export interface FailureMessage {
+  type: "failure";
+  run_id: string;
+  agent_id: string;
+  retry_count: number;
+  error: string;
+  supervisor_do_id: string;
+}

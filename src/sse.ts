@@ -1,4 +1,5 @@
-import type { Env, PipelineEvent, DagState } from "./types";
+import type { Env, DagState } from "./types";
+import { getSupervisor } from "./do-stubs";
 import { eventRow, oobUpdate } from "./ui/components";
 
 interface StreamOpts {
@@ -32,8 +33,7 @@ export async function streamRun(
   const heartbeatMs = opts.heartbeatMs ?? 15_000;
   const maxDurationMs = opts.maxDurationMs ?? 5 * 60_000;
 
-  const supervisorId = env.SUPERVISOR.idFromName(runId);
-  const supervisor = env.SUPERVISOR.get(supervisorId);
+  const supervisor = getSupervisor(env, runId);
 
   let cursor = Number(sinceId) || 0;
   let lastHeartbeat = Date.now();
@@ -48,7 +48,7 @@ export async function streamRun(
 
       try {
         while (Date.now() - start < maxDurationMs) {
-          const events = (await (supervisor as any).getEvents(cursor)) as PipelineEvent[];
+          const events = await supervisor.getEvents(cursor);
 
           for (const ev of events) {
             cursor = Math.max(cursor, Number(ev.id));
@@ -57,7 +57,7 @@ export async function streamRun(
           }
 
           // Always pull state — emit only when changed (cheap diff via hash).
-          const state = (await (supervisor as any).getState()) as DagState | null;
+          const state = await supervisor.getState();
           if (state) {
             const h = stateHash(state);
             if (h !== lastStateHash) {

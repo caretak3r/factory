@@ -113,7 +113,7 @@ The DAG auto-refreshes every 3 seconds; events stream live via
 npm install
 
 # Run tests
-npx vitest run        # 137 tests
+npx vitest run        # 231 tests
 
 # Local dev (in-memory simulators — no Cloudflare account needed)
 npx wrangler dev
@@ -265,7 +265,7 @@ pipelines/
   security-base.yaml       Reusable security block (consumed via import:)
   conditional-review.yaml  Demo using import + when + gossip + memory
 test/
-  *.test.ts                137 tests across 18 files
+  *.test.ts                231 tests across 23 files
 ```
 
 ## Status

@@ -45,6 +45,10 @@ export function evaluateGate(
     }
 
     default:
-      return { pass: true, reason: `Unknown condition "${condition}" — permissive pass`, condition };
+      return {
+        pass: false,
+        reason: `Unknown gate condition "${condition}" — failing closed`,
+        condition,
+      };
   }
 }

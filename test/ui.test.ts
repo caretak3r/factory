@@ -99,8 +99,15 @@ describe("ui.runDetail", () => {
     expect(html).toContain('class="pill status-running"');
     expect(html).toContain('id="dag"');
     expect(html).toContain('hx-get="/ui/runs/run-abc/dag"');
+    expect(html).not.toContain("every 6s"); // no recurring Mermaid poll
     expect(html).toContain("claude-sonnet-4-6");
     expect(html).toContain("synthesizer");
+  });
+
+  it("disables recurring schema DAG polling", () => {
+    const html = render(runDetail("run-abc", sampleDag, []));
+    expect(html).toContain('hx-trigger="none"');
+    expect(html).not.toContain('hx-trigger="every 6s"');
   });
 
   it("wires SSE stream with cursor", () => {

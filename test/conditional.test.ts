@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { evaluateCondition, ConditionError } from "../src/conditional";
+import {
+  evaluateCondition,
+  remapRefs,
+  ConditionError,
+  __conditionCacheSize,
+  __clearConditionCache,
+} from "../src/conditional";
 import type { DagState, PipelineEvent } from "../src/types";
 
 function makeCtx(overrides: Partial<DagState> = {}, events: PipelineEvent[] = []) {
@@ -59,6 +65,17 @@ describe("conditional — literals & operators", () => {
     expect(evaluateCondition("1500 <= 1500", makeCtx())).toBe(true);
     expect(evaluateCondition("1500 == 1500", makeCtx())).toBe(true);
     expect(evaluateCondition("1500 != 1500", makeCtx())).toBe(false);
+  });
+
+  it("parses decimal literals", () => {
+    expect(evaluateCondition("1.5 > 1", makeCtx())).toBe(true);
+    expect(evaluateCondition("0.5 < 1", makeCtx())).toBe(true);
+    expect(evaluateCondition("1.5 == 1.5", makeCtx())).toBe(true);
+  });
+
+  it("does not treat identifier path dots as decimals", () => {
+    // Regression guard: agent.<id>.<field> must still resolve, not tokenize as a number.
+    expect(evaluateCondition("agent.security.completed", makeCtx())).toBe(true);
   });
 
   it("evaluates string comparisons", () => {
@@ -165,5 +182,94 @@ describe("conditional — realistic combinations", () => {
     expect(
       evaluateCondition("metrics.total_tokens > 1000 and metrics.total_retries >= 3", makeCtx())
     ).toBe(true);
+  });
+});
+
+describe("remapRefs", () => {
+  it("prefixes agent references", () => {
+    expect(remapRefs("agent.scanner.completed", "review__")).toBe(
+      "agent.review__scanner.completed"
+    );
+  });
+
+  it("prefixes gate references", () => {
+    expect(remapRefs("gate.check.passed", "review__")).toBe(
+      "gate.review__check.passed"
+    );
+  });
+
+  it("leaves metrics references and literals untouched", () => {
+    expect(remapRefs("metrics.total_tokens > 100", "p__")).toBe(
+      "metrics.total_tokens > 100"
+    );
+  });
+
+  it("prefixes every reference in a compound expression", () => {
+    expect(remapRefs("agent.a.completed and agent.b.failed", "x__")).toBe(
+      "agent.x__a.completed and agent.x__b.failed"
+    );
+  });
+
+  it("does not treat an agent id named agent as a second root", () => {
+    expect(remapRefs("agent.agent.completed", "review__")).toBe(
+      "agent.review__agent.completed"
+    );
+  });
+
+  it("does not treat an agent id named gate as a gate root", () => {
+    expect(remapRefs("agent.gate.completed", "review__")).toBe(
+      "agent.review__gate.completed"
+    );
+  });
+
+  it("does not treat a gate step named gate as a second root", () => {
+    expect(remapRefs("gate.gate.passed", "review__")).toBe(
+      "gate.review__gate.passed"
+    );
+  });
+
+  it("does not treat a gate step named agent as an agent root", () => {
+    expect(remapRefs("gate.agent.passed", "review__")).toBe(
+      "gate.review__agent.passed"
+    );
+  });
+
+  it("returns a blank expression unchanged", () => {
+    expect(remapRefs("   ", "x__")).toBe("   ");
+  });
+
+  it("throws ConditionError on a malformed expression", () => {
+    expect(() => remapRefs("agent..", "x__")).toThrow(ConditionError);
+  });
+});
+
+describe("evaluateCondition blank guard (CFEAT-05)", () => {
+  it("treats an empty expression as true", () => {
+    expect(evaluateCondition("", makeCtx())).toBe(true);
+  });
+
+  it("treats a whitespace expression as true", () => {
+    expect(evaluateCondition("   ", makeCtx())).toBe(true);
+  });
+});
+
+describe("evaluateCondition AST memoization", () => {
+  it("compiles each distinct expression exactly once", () => {
+    __clearConditionCache();
+    expect(__conditionCacheSize()).toBe(0);
+    const ctx = makeCtx();
+    evaluateCondition("metrics.total_tokens > 100", ctx);
+    evaluateCondition("metrics.total_tokens > 100", ctx);
+    evaluateCondition("metrics.total_tokens > 100", ctx);
+    expect(__conditionCacheSize()).toBe(1); // 3 evals, 1 parse
+    evaluateCondition("metrics.total_retries > 0", ctx);
+    expect(__conditionCacheSize()).toBe(2);
+  });
+
+  it("does not cache the blank-guard shortcut", () => {
+    __clearConditionCache();
+    evaluateCondition("", makeCtx());
+    evaluateCondition("   ", makeCtx());
+    expect(__conditionCacheSize()).toBe(0);
   });
 });

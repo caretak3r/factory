@@ -1,6 +1,14 @@
 import type { Env } from "../types";
 import type { ToolDefinition } from "../anthropic";
 import { readScopedArtifact, withTimeout } from "./sandbox";
+import {
+  vetGrepPattern,
+  compileLinearPattern,
+  boundedGrepScan,
+  GREP_FLAGS_RE,
+  MAX_GREP_MATCHES,
+  type LineMatcher,
+} from "./grep-guard";
 
 export interface ToolContext {
   runId: string;
@@ -47,9 +55,21 @@ const grepArtifact: ToolHandler = async (input, ctx) => {
   if (!path || !pattern) {
     return { content: "missing required fields: path, pattern", is_error: true };
   }
-  let regex: RegExp;
+  const verdict = vetGrepPattern(pattern);
+  if (!verdict.ok) {
+    return { content: `pattern rejected: ${verdict.reason}`, is_error: true };
+  }
+  if (!GREP_FLAGS_RE.test(flags)) {
+    return {
+      content: `unsupported regex flags: "${flags}" (allowed: gimsu)`,
+      is_error: true,
+    };
+  }
+  let matcher: LineMatcher;
   try {
-    regex = new RegExp(pattern, flags || "g");
+    // Linear-time RE2 engine — a model-supplied pattern cannot backtrack
+    // (SECURITY-02); RE2 also rejects backrefs/lookaround at compile time.
+    matcher = compileLinearPattern(pattern, flags);
   } catch (e) {
     return { content: `invalid regex: ${e instanceof Error ? e.message : e}`, is_error: true };
   }
@@ -60,19 +80,23 @@ const grepArtifact: ToolHandler = async (input, ctx) => {
     return { content: e instanceof Error ? e.message : String(e), is_error: true };
   }
 
-  const lines = text.split("\n");
-  const matches: string[] = [];
-  lines.forEach((line, i) => {
-    if (regex.test(line)) matches.push(`${i + 1}: ${line}`);
-    regex.lastIndex = 0; // reset for /g flag across lines
-  });
-  return {
-    content:
-      matches.length === 0
-        ? `(no matches for /${pattern}/${flags} in ${path})`
-        : matches.slice(0, 200).join("\n") +
-          (matches.length > 200 ? `\n[+${matches.length - 200} more]` : ""),
-  };
+  const scan = boundedGrepScan(text, matcher);
+  const notes: string[] = [];
+  if (scan.capped) {
+    notes.push(
+      `[match cap ${MAX_GREP_MATCHES} reached; stopped after line ${scan.scannedLines} of ${scan.totalLines}]`
+    );
+  }
+  if (scan.aborted) {
+    notes.push(
+      `[grep time budget exceeded; scanned ${scan.scannedLines} of ${scan.totalLines} lines]`
+    );
+  }
+  const suffix = notes.length > 0 ? "\n" + notes.join("\n") : "";
+  if (scan.matches.length === 0) {
+    return { content: `(no matches for /${pattern}/${flags} in ${path})` + suffix };
+  }
+  return { content: scan.matches.join("\n") + suffix };
 };
 
 const semgrepStub: ToolHandler = async (input) => ({
@@ -106,13 +130,13 @@ const REGISTRY: Record<string, ToolEntry> = {
   grep: {
     definition: {
       name: "grep",
-      description: "Search a single run-scoped artifact for lines matching a regex.",
+      description: "Search a single run-scoped artifact for lines matching a regex (RE2 syntax, linear-time). Pattern max 128 chars; backreferences, lookaround, and quantified groups are rejected.",
       input_schema: {
         type: "object",
         properties: {
           path: { type: "string", description: "Artifact path under the run's scope" },
-          pattern: { type: "string", description: "Regular expression" },
-          flags: { type: "string", description: "Regex flags (e.g. 'gi')" },
+          pattern: { type: "string", description: "Regular expression, RE2 syntax (max 128 chars; no quantified groups, backreferences, or lookaround)" },
+          flags: { type: "string", description: "Regex flags (allowed: gimsu)" },
         },
         required: ["path", "pattern"],
       },

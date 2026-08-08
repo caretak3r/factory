@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parsePipelineYaml, validatePipelineConfig } from "../src/schema";
+import { parsePipelineYaml, validatePipelineConfig, RunRequestSchema } from "../src/schema";
 
 const codeReviewYaml = `
 name: code-review
@@ -148,6 +148,123 @@ budget:
       if (!config.success) return;
       const errors = validatePipelineConfig(config.data);
       expect(errors).toEqual([]);
+    });
+  });
+  describe("agent id charset (SECURITY-04)", () => {
+    const yamlWithId = (id: string) => `
+name: t
+version: 1
+description: t
+model_defaults:
+  planning: a
+  execution: b
+  classification: c
+agents:
+  - id: "${id}"
+    role: r
+    model: execution
+    tools: []
+    memory:
+      max_tokens: 100
+pipeline:
+  - step: run
+    agent: "${id}"
+recovery: {}
+budget:
+  max_tokens: 1
+  max_duration_ms: 1
+  max_retries: 0
+`;
+
+    it("rejects an agent id containing a slash", () => {
+      const result = parsePipelineYaml(yamlWithId("bad/id"));
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errors.join("; ")).toContain("agents.0.id");
+      }
+    });
+
+    it("rejects a dots-only agent id", () => {
+      const result = parsePipelineYaml(yamlWithId(".."));
+      expect(result.success).toBe(false);
+    });
+
+    it("accepts ids with dots, hyphens, and underscores", () => {
+      const result = parsePipelineYaml(yamlWithId("agent.v2_x-1"));
+      expect(result.success).toBe(true);
+    });
+
+    it("validatePipelineConfig flags unsafe ids that bypass the parser (composed ids)", () => {
+      const parsed = parsePipelineYaml(yamlWithId("solo"));
+      expect(parsed.success).toBe(true);
+      if (!parsed.success) return;
+      parsed.data.agents.push({
+        id: "../evil",
+        role: "r",
+        model: "execution",
+        tools: [],
+        memory: { max_tokens: 100 },
+      });
+      const errors = validatePipelineConfig(parsed.data);
+      expect(errors.some((e) => e.includes("unsafe characters"))).toBe(true);
+    });
+  });
+
+  describe("YAML alias cap (SECURITY-05)", () => {
+    it("rejects an alias-expansion bomb", () => {
+      const bomb = `
+a: &a ["x","x","x","x","x","x","x","x"]
+b: &b [*a,*a,*a,*a,*a,*a,*a,*a]
+c: &c [*b,*b,*b,*b,*b,*b,*b,*b]
+d: &d [*c,*c,*c,*c,*c,*c,*c,*c]
+e: [*d,*d,*d,*d,*d,*d,*d,*d]
+`;
+      const result = parsePipelineYaml(bomb);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errors[0]).toContain("YAML parse error");
+      }
+    });
+
+    it("still accepts benign anchor reuse", () => {
+      const yamlWithAnchor = `
+name: t
+version: 1
+description: t
+model_defaults:
+  planning: &m claude-x
+  execution: *m
+  classification: c
+agents:
+  - id: solo
+    role: r
+    model: execution
+    tools: []
+    memory:
+      max_tokens: 100
+pipeline:
+  - step: run
+    agent: solo
+recovery: {}
+budget:
+  max_tokens: 1
+  max_duration_ms: 1
+  max_retries: 0
+`;
+      const result = parsePipelineYaml(yamlWithAnchor);
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe("RunRequestSchema (SECURITY-05)", () => {
+    it("accepts a valid run request (input optional)", () => {
+      expect(RunRequestSchema.safeParse({ pipeline: "p", input: { x: 1 } }).success).toBe(true);
+      expect(RunRequestSchema.safeParse({ pipeline: "p" }).success).toBe(true);
+    });
+
+    it("rejects missing or non-string pipeline", () => {
+      expect(RunRequestSchema.safeParse({}).success).toBe(false);
+      expect(RunRequestSchema.safeParse({ pipeline: 42 }).success).toBe(false);
     });
   });
 });

@@ -16,6 +16,7 @@ import {
   type ToolDefinition,
 } from "./anthropic";
 import { runToolCall, toolDefinitionsFor, type ToolContext } from "./tools/registry";
+import { assembleUserInput, type UntrustedSection } from "./prompt-fence";
 
 export interface TaskParams {
   runId: string;
@@ -89,8 +90,11 @@ export class Agent extends DurableObject<Env> {
     );
 
     try {
-      // Pull input artifacts from R2
-      const inputParts: string[] = [];
+      // Pull input artifacts from R2. Every non-operator-authored piece of
+      // content (prior-run summaries, peer artifacts, run input / upstream
+      // artifacts) is fenced as untrusted data before prompt assembly
+      // (SECURITY-03). The system prompt (agent role) stays trusted and bare.
+      const sections: UntrustedSection[] = [];
 
       // Cross-run memory — prepend prior-run summaries if provided
       if (params.priorRuns && params.priorRuns.length > 0) {
@@ -102,24 +106,33 @@ export class Agent extends DurableObject<Env> {
               `agents_completed=${r.agents_completed} agents_failed=${r.agents_failed}`
           )
           .join("\n");
-        inputParts.push(`# Prior runs of this pipeline\n${summary}`);
+        sections.push({
+          source: "prior-runs",
+          body: `# Prior runs of this pipeline\n${summary}`,
+        });
       }
 
       // Gossip — peer artifacts the supervisor authorized
       if (params.peers && params.peers.length > 0) {
-        for (const peer of params.peers) {
-          const obj = await this.env.ARTIFACT_STORE.get(peer.artifact_ref);
-          if (obj) {
-            inputParts.push(`# Peer agent: ${peer.agent_id}\n${await obj.text()}`);
-          }
-        }
+        const peerTexts = await Promise.all(
+          params.peers.map(async (peer) => {
+            const obj = await this.env.ARTIFACT_STORE.get(peer.artifact_ref);
+            return obj
+              ? { source: `peer:${peer.agent_id}`, body: await obj.text() }
+              : null;
+          })
+        );
+        for (const t of peerTexts) if (t !== null) sections.push(t);
       }
 
-      for (const ref of params.inputRefs) {
-        const obj = await this.env.ARTIFACT_STORE.get(ref);
-        if (obj) inputParts.push(await obj.text());
-      }
-      const input = inputParts.join("\n\n---\n\n");
+      const inputTexts = await Promise.all(
+        params.inputRefs.map(async (ref) => {
+          const obj = await this.env.ARTIFACT_STORE.get(ref);
+          return obj ? { source: `input:${ref}`, body: await obj.text() } : null;
+        })
+      );
+      for (const t of inputTexts) if (t !== null) sections.push(t);
+      const input = assembleUserInput(sections);
 
       const { system } = buildPrompt(params.agentConfig, input);
       const model = resolveModel(params.agentConfig.model, params.modelDefaults);
@@ -235,15 +248,15 @@ export class Agent extends DurableObject<Env> {
         retryCount: params.retryCount,
       });
 
+      this.ctx.storage.sql.exec(
+        "INSERT OR REPLACE INTO config (key, value) VALUES ('status', 'completed')"
+      );
+
       await this.env.RESULT_QUEUE.send({
         type: "result",
         envelope,
         supervisor_do_id: params.supervisorDoId,
       });
-
-      this.ctx.storage.sql.exec(
-        "INSERT OR REPLACE INTO config (key, value) VALUES ('status', 'completed')"
-      );
 
       return {
         success: true,
@@ -259,6 +272,14 @@ export class Agent extends DurableObject<Env> {
         "INSERT OR REPLACE INTO config (key, value) VALUES ('status', 'failed')"
       );
       this.recordTurn(0, "error", error);
+      await this.env.RESULT_QUEUE.send({
+        type: "failure",
+        run_id: params.runId,
+        agent_id: params.agentConfig.id,
+        retry_count: params.retryCount,
+        error,
+        supervisor_do_id: params.supervisorDoId,
+      });
       return { success: false, error, durationMs: Date.now() - startTime };
     }
   }
