@@ -14,9 +14,73 @@ export function home(): HtmlEscapedString {
     <h1>AgentX Factory</h1>
     <p>Multi-agent pipeline orchestration on Cloudflare. Pick a section above.</p>
     <ul>
+      <li><a href="/ideas/new">Submit an idea</a></li>
       <li><a href="/runs">View pipeline runs</a></li>
       <li><a href="/pipelines">Manage pipelines</a></li>
     </ul>
+  `) as HtmlEscapedString;
+}
+
+export function ideaForm(error?: string): HtmlEscapedString {
+  return (html`
+    <h1>Submit an idea</h1>
+    <p>Paste a blurb. Research and devil's-advocate agents run before any spec.</p>
+    ${error ? html`<p class="pill status-failed">${error}</p>` : raw("")}
+    <form method="post" action="/ideas">
+      <p>
+        <label for="body">Body</label><br />
+        <textarea id="body" name="body" rows="12" cols="72" required></textarea>
+      </p>
+      <p>
+        <label for="slug">Slug (optional)</label><br />
+        <input id="slug" name="slug" type="text" maxlength="80" placeholder="helm-diff-tui" />
+      </p>
+      <p>
+        <label for="goal">Goal (optional)</label><br />
+        <input id="goal" name="goal" type="text" size="72" />
+      </p>
+      <p>
+        <label for="action">Action</label><br />
+        <select id="action" name="action">
+          <option value="auto" selected>auto (pipeline decides)</option>
+          <option value="skip">skip</option>
+          <option value="spec">spec if it survives review</option>
+          <option value="scaffold">scaffold if it survives review</option>
+        </select>
+      </p>
+      <p><button type="submit">Ingest</button></p>
+    </form>
+  `) as HtmlEscapedString;
+}
+
+export function ideaIngestResult(opts: {
+  error?: string;
+  details?: string[];
+  ideaId?: string;
+  status?: string;
+  runId?: string | null;
+  warning?: string;
+}): HtmlEscapedString {
+  if (opts.error && !opts.ideaId) {
+    return (html`
+      <h1>Idea rejected</h1>
+      <p>${opts.error}</p>
+      <ul>
+        ${(opts.details ?? []).map((d) => html`<li>${d}</li>`)}
+      </ul>
+      <p><a href="/ideas/new">Back</a></p>
+    `) as HtmlEscapedString;
+  }
+  return (html`
+    <h1>Idea ${opts.status ?? "stored"}</h1>
+    ${opts.warning ? html`<p class="pill status-failed">${opts.warning}</p>` : raw("")}
+    <p>id: <code>${opts.ideaId ?? ""}</code></p>
+    ${
+      opts.runId
+        ? html`<p><a href="/runs/${opts.runId}">Open run</a></p>`
+        : html`<p>No pipeline run started.</p>`
+    }
+    <p><a href="/ideas/new">Submit another</a></p>
   `) as HtmlEscapedString;
 }
 

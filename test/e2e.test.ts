@@ -129,3 +129,29 @@ describe("E2E: Pipeline Integration", () => {
     expect(parsed.data.recovery.escalation).toEqual({ channel: "notification" });
   });
 });
+
+describe("E2E: idea-to-verdict", () => {
+  const yaml = readFileSync("pipelines/idea-to-verdict.yaml", "utf-8");
+
+  it("parses and passes cross-ref validation", () => {
+    const parsed = parsePipelineYaml(yaml);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(validatePipelineConfig(parsed.data)).toEqual([]);
+  });
+
+  it("gives the researcher web_search and keeps devil from being a spec writer", () => {
+    const parsed = parsePipelineYaml(yaml);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const byId = Object.fromEntries(parsed.data.agents.map((a) => [a.id, a]));
+    expect(byId.researcher.tools).toEqual(["web_search"]);
+    expect(byId.devil.role).toMatch(/invalid if it recommends building/i);
+    expect(byId.synthesizer.role).toMatch(/Default is kill/);
+    expect(parsed.data.pipeline[1].agents).toEqual([
+      "researcher",
+      "devil",
+      "falsifier",
+    ]);
+  });
+});

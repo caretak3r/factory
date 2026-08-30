@@ -10,6 +10,7 @@ import { ui } from "./ui";
 import { streamRun } from "./sse";
 import { resolveArtifactKey } from "./tools/sandbox";
 import { getSupervisor, getAgent, getBreaker, writeRunIndex } from "./do-stubs";
+import { ingestIdea, loadIdea } from "./ingest";
 
 export { Agent } from "./agent";
 export { Supervisor } from "./supervisor";
@@ -70,6 +71,32 @@ app.delete("/api/pipelines/:name", async (c) => {
   const name = c.req.param("name");
   await c.env.PIPELINE_KV.delete(`pipeline:${name}`);
   return c.json({ status: "deleted" });
+});
+
+app.post("/api/ingest", async (c) => {
+  const declared = Number(c.req.header("content-length") ?? "0");
+  if (declared > MAX_RUN_BODY_BYTES) {
+    return c.json({ error: `Request body too large (max ${MAX_RUN_BODY_BYTES} bytes)` }, 413);
+  }
+  const raw = await c.req.text();
+  if (byteLengthUtf8(raw) > MAX_RUN_BODY_BYTES) {
+    return c.json({ error: `Request body too large (max ${MAX_RUN_BODY_BYTES} bytes)` }, 413);
+  }
+  let parsedBody: unknown;
+  try {
+    parsedBody = JSON.parse(raw);
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+  const result = await ingestIdea(c.env, parsedBody);
+  return c.json(result.body, result.httpStatus as 200 | 201 | 400 | 503);
+});
+
+app.get("/api/ideas/:id", async (c) => {
+  const id = c.req.param("id");
+  const record = await loadIdea(c.env, id);
+  if (!record) return c.json({ error: "Not found" }, 404);
+  return c.json(record);
 });
 
 // ─── Pipeline Runs ─────────────────────────────────

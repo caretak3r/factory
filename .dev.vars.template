@@ -10,3 +10,7 @@
 # Required. Anthropic API key — every agent LLM call uses this.
 # Get one at https://console.anthropic.com/settings/keys
 ANTHROPIC_API_KEY=sk-ant-...
+
+# Optional. Exa API key for the researcher agent's web_search tool.
+# Unset: the tool returns an error instead of searching.
+# EXA_API_KEY=

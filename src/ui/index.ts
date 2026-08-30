@@ -9,7 +9,11 @@ import {
   pipelineList,
   pipelineDetail,
   dagMermaid,
+  ideaForm,
+  ideaIngestResult,
 } from "./components";
+import { ingestIdea } from "../ingest";
+import { IDEA_ACTIONS, type IdeaAction } from "../idea";
 
 interface RunIndexEntry {
   pipeline?: string;
@@ -20,6 +24,51 @@ interface RunIndexEntry {
 export const ui = new Hono<{ Bindings: Env }>();
 
 ui.get("/", (c) => c.html(page({ title: "Home", body: home() })));
+
+ui.get("/ideas/new", (c) =>
+  c.html(page({ title: "Submit an idea", body: ideaForm() }))
+);
+
+ui.post("/ideas", async (c) => {
+  const form = await c.req.parseBody();
+  const actionRaw = String(form.action ?? "auto");
+  const action = (IDEA_ACTIONS as readonly string[]).includes(actionRaw)
+    ? (actionRaw as IdeaAction)
+    : "auto";
+  const slugRaw = String(form.slug ?? "").trim();
+  const result = await ingestIdea(c.env, {
+    body: String(form.body ?? ""),
+    slug: slugRaw.length > 0 ? slugRaw : null,
+    goal: String(form.goal ?? ""),
+    action,
+    source: { kind: "form" },
+  });
+  if (!("idea" in result.body)) {
+    const fail = result.body as { error: string; details?: string[] };
+    return c.html(
+      page({
+        title: "Idea rejected",
+        body: ideaIngestResult({
+          error: fail.error,
+          details: fail.details,
+        }),
+      }),
+      400
+    );
+  }
+  const ok = result.body;
+  return c.html(
+    page({
+      title: "Idea ingested",
+      body: ideaIngestResult({
+        ideaId: ok.idea.id,
+        status: ok.status,
+        runId: ok.run_id,
+        warning: ok.error,
+      }),
+    })
+  );
+});
 
 ui.get("/runs", async (c) => {
   const list = await c.env.PIPELINE_KV.list({ prefix: "run:" });

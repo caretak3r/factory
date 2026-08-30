@@ -1,0 +1,11 @@
+# Human-editable factory intake defaults. Runtime still reads per-idea JSON.
+auto_spec: false
+auto_scaffold: false
+poll_seconds: 14400
+daily_x_credit_cap_usd: 5
+github:
+  owner: caretak3r
+  visibility: private
+  template: caretak3r/idea-template
+  prefix: idea-
+  pages: false

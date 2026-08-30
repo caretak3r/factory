@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   runToolCall,
   toolDefinitionsFor,
@@ -6,6 +6,13 @@ import {
   type ToolContext,
 } from "../src/tools/registry";
 import { resolveArtifactKey } from "../src/tools/sandbox";
+import {
+  formatHits,
+  resetWebSearchCounts,
+  searchExa,
+  vetWebQuery,
+  WEB_SEARCH_MAX_PER_RUN,
+} from "../src/tools/web-search";
 
 // ─── In-memory R2 stub ────────────────────────────
 
@@ -66,7 +73,9 @@ describe("sandbox.resolveArtifactKey", () => {
 describe("registry.listAvailableTools", () => {
   it("exposes the expected tool catalog", () => {
     const list = listAvailableTools().sort();
-    expect(list).toEqual(["grep", "read", "semgrep", "test-runner"]);
+    expect(list.sort()).toEqual(
+      ["grep", "read", "semgrep", "test-runner", "web_search"].sort()
+    );
   });
 });
 
@@ -236,5 +245,82 @@ describe("registry.runToolCall — stubs", () => {
     const ctx = ctxWith({});
     const res = await runToolCall({ name: "test-runner", input: {} }, ctx);
     expect(res.content).toContain("stubbed");
+  });
+});
+
+describe("web_search", () => {
+  beforeEach(() => {
+    resetWebSearchCounts();
+  });
+
+  it("rejects an empty query", () => {
+    expect(vetWebQuery("")).toEqual({ ok: false, reason: "query is empty" });
+    expect(vetWebQuery("  ")).toEqual({ ok: false, reason: "query is empty" });
+  });
+
+  it("formats hits with url on its own line", () => {
+    const text = formatHits("helm diff", [
+      {
+        title: "helm-diff",
+        url: "https://example.com/helm-diff",
+        snippet: "plugin",
+      },
+    ]);
+    expect(text).toContain("https://example.com/helm-diff");
+    expect(text).toContain("helm-diff");
+  });
+
+  it("parses Exa JSON via the injected fetch", async () => {
+    const fetchFn = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        results: [
+          { title: "A", url: "https://a.example", text: "alpha" },
+          { url: "https://b.example" },
+        ],
+      }),
+    });
+    const hits = await searchExa("q", "key", fetchFn as unknown as typeof fetch);
+    expect(hits).toEqual([
+      { title: "A", url: "https://a.example", snippet: "alpha" },
+      { title: "https://b.example", url: "https://b.example", snippet: "" },
+    ]);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("errors when EXA_API_KEY is missing", async () => {
+    const ctx = ctxWith({});
+    const res = await runToolCall(
+      { name: "web_search", input: { query: "existing substitutes" } },
+      ctx
+    );
+    expect(res.is_error).toBe(true);
+    expect(res.content).toContain("unconfigured");
+  });
+
+  it("caps queries per run", async () => {
+    const fetchFn = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ results: [] }),
+    });
+    vi.stubGlobal("fetch", fetchFn);
+    const ctx: ToolContext = {
+      runId: "run-cap",
+      env: { ARTIFACT_STORE: new StubR2(), EXA_API_KEY: "k" } as any,
+    };
+    for (let i = 0; i < WEB_SEARCH_MAX_PER_RUN; i++) {
+      const res = await runToolCall(
+        { name: "web_search", input: { query: `q${i}` } },
+        ctx
+      );
+      expect(res.is_error).toBeUndefined();
+    }
+    const capped = await runToolCall(
+      { name: "web_search", input: { query: "one more" } },
+      ctx
+    );
+    expect(capped.is_error).toBe(true);
+    expect(capped.content).toContain("cap");
+    vi.unstubAllGlobals();
   });
 });

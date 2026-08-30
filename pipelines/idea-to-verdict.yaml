@@ -1,0 +1,137 @@
+name: idea-to-verdict
+version: 1
+description: >
+  Adversarial review of an idea.v1 record. Research, kill, and pivot
+  before any specification. Default verdict is kill.
+
+model_defaults:
+  planning: claude-opus-4-6
+  execution: claude-sonnet-4-6
+  classification: claude-haiku-4-5-20251001
+
+agents:
+  - id: extractor
+    role: >
+      Restate the submitted idea as a claim. No praise. No product pitch.
+      Output markdown with: Claim, Named user (or "unknown"), What it
+      would replace, Open questions. Do not recommend building it.
+    model: classification
+    tools: []
+    memory:
+      max_tokens: 2000
+    gossip:
+      expose: public
+
+  - id: researcher
+    role: >
+      Search the public web for existing substitutes, papers, and prior art.
+      You must call web_search at least twice.
+      Output markdown with a heading "Substitutes" listing at least two
+      items, each with a URL. Then "Prior art" and "Gaps".
+      If you cannot find two substitutes, say so and treat that as evidence
+      the idea is vapor, not that it is novel.
+      Do not recommend building the original idea.
+    model: execution
+    tools: [web_search]
+    memory:
+      max_tokens: 8000
+    gossip:
+      expose: public
+    turns:
+      max: 6
+      stop_when: "SUBSTITUTES_DONE"
+
+  - id: devil
+    role: >
+      Devil's advocate. Write the strongest case that this idea must NOT
+      be built. Name the existing substitute. Name the cost of being wrong.
+      Your output is invalid if it recommends building the original idea
+      as submitted. End with: Verdict-from-devil: kill
+      unless you found a reason it is not even worth killing (then: skip).
+    model: planning
+    tools: []
+    memory:
+      max_tokens: 6000
+    gossip:
+      expose: public
+
+  - id: falsifier
+    role: >
+      List observations that would kill this idea if they are true.
+      For each, say how to check it. Prefer evidence the researcher can
+      already see. Do not cheerlead. Do not recommend a spec.
+    model: execution
+    tools: []
+    memory:
+      max_tokens: 4000
+    gossip:
+      expose: public
+
+  - id: pivot
+    role: >
+      If anything remains after the kill case, name ONE narrower problem.
+      It must be strictly smaller than the submitted blurb. Same width is
+      a fail: output niche: none
+      Output markdown:
+      niche: <one sentence or none>
+      named_user: <who>
+      named_substitute: <what they use today>
+      why_narrower: <one sentence>
+    model: planning
+    tools: []
+    memory:
+      max_tokens: 4000
+    gossip:
+      expose: public
+      read_peers: [extractor, researcher, devil, falsifier]
+
+  - id: synthesizer
+    role: >
+      Decide kill, hold, or spec. Default is kill.
+      spec is legal only if all of these are present: a named user, a
+      named substitute with a URL from the researcher, and a one-sentence
+      niche that is narrower than the original body.
+      A spec that restates the paste is a failure. Use kill.
+      Output ONLY a JSON object:
+      {"verdict":"kill"|"hold"|"spec","niche":string|null,"slug":string|null,"reasons":[string]}
+      slug is kebab-case or null. No markdown. No extra keys.
+    model: planning
+    tools: []
+    memory:
+      max_tokens: 3000
+    gossip:
+      read_peers: [extractor, researcher, devil, falsifier, pivot]
+
+pipeline:
+  - step: extract
+    agent: extractor
+
+  - step: probe
+    agents: [researcher, devil, falsifier]
+    mode: parallel
+
+  - step: probe-gate
+    type: gate
+    condition: all_agents_completed
+
+  - step: pivot
+    agent: pivot
+    inputs: [extractor, researcher, devil, falsifier]
+
+  - step: decide
+    agent: synthesizer
+    inputs: [extractor, researcher, devil, falsifier, pivot]
+
+recovery:
+  default:
+    max: 2
+    backoff: exponential
+  fallback:
+    skip_failed_agent: true
+  escalation:
+    channel: notification
+
+budget:
+  max_tokens: 120000
+  max_duration_ms: 300000
+  max_retries: 6

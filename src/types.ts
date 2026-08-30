@@ -7,6 +7,8 @@ export interface Env {
   DISPATCH_QUEUE: Queue;
   RESULT_QUEUE: Queue;
   ANTHROPIC_API_KEY: string;
+  /** Optional. Exa key for the `web_search` tool. Unset → tool returns an error. */
+  EXA_API_KEY?: string;
 }
 
 export interface AgentRef {
