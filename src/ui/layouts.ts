@@ -485,6 +485,7 @@ export function page(opts: PageOpts): HtmlEscapedString {
   <body>
     <header>
       <a class="brand" href="/">AgentX Factory</a>
+      <a href="/ideas/new">Ideas</a>
       <a href="/runs">Runs</a>
       <a href="/pipelines">Pipelines</a>
       <a href="/api/health" target="_blank">Health</a>

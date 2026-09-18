@@ -8,6 +8,8 @@ import {
   dagMermaid,
   eventRow,
   eventLog,
+  ideaForm,
+  ideaIngestResult,
 } from "../src/ui/components";
 import type { DagState, PipelineEvent } from "../src/types";
 
@@ -65,8 +67,35 @@ describe("ui.home", () => {
   it("renders nav links", () => {
     const html = render(home());
     expect(html).toContain("AgentX Factory");
+    expect(html).toContain('href="/ideas/new"');
     expect(html).toContain('href="/runs"');
     expect(html).toContain('href="/pipelines"');
+  });
+});
+
+describe("ui.ideaForm", () => {
+  it("posts body slug goal and action to /ideas", () => {
+    const html = render(ideaForm());
+    expect(html).toContain('action="/ideas"');
+    expect(html).toContain('name="body"');
+    expect(html).toContain('name="slug"');
+    expect(html).toContain('name="goal"');
+    expect(html).toContain('name="action"');
+    expect(html).toContain('value="auto"');
+  });
+});
+
+describe("ui.ideaIngestResult", () => {
+  it("links the started run", () => {
+    const html = render(
+      ideaIngestResult({
+        ideaId: "ide_01TEST",
+        status: "started",
+        runId: "run-abc",
+      })
+    );
+    expect(html).toContain("ide_01TEST");
+    expect(html).toContain('href="/runs/run-abc"');
   });
 });
 

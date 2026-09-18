@@ -113,7 +113,7 @@ The DAG auto-refreshes every 3 seconds; events stream live via
 npm install
 
 # Run tests
-npx vitest run        # 231 tests
+npx vitest run        # 267 tests
 
 # Local dev (in-memory simulators — no Cloudflare account needed)
 npx wrangler dev
@@ -157,9 +157,10 @@ agents:
     turns: { max: 4, stop_when: "FINAL_ANSWER" }
 ```
 
-**Agent tool use.** Built-in tools: `read`, `grep` (R2-scoped), plus stubs for
-`semgrep` and `test-runner`. Tools are sandboxed to the run's R2 prefix and
-capped at 10 s wall clock per call.
+**Agent tool use.** Built-in tools: `read`, `grep` (R2-scoped), `web_search`
+(Exa, 8 queries per run, needs `EXA_API_KEY`), plus stubs for `semgrep` and
+`test-runner`. Tools are sandboxed to the run's R2 prefix and capped at 10 s
+wall clock per call.
 
 ```yaml
 agents:
@@ -265,7 +266,7 @@ pipelines/
   security-base.yaml       Reusable security block (consumed via import:)
   conditional-review.yaml  Demo using import + when + gossip + memory
 test/
-  *.test.ts                231 tests across 23 files
+  *.test.ts                267 tests across 25 files
 ```
 
 ## Status

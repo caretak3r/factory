@@ -9,6 +9,13 @@ import {
   MAX_GREP_MATCHES,
   type LineMatcher,
 } from "./grep-guard";
+import {
+  bumpWebSearchCount,
+  formatHits,
+  searchExa,
+  vetWebQuery,
+  WEB_SEARCH_MAX_PER_RUN,
+} from "./web-search";
 
 export interface ToolContext {
   runId: string;
@@ -107,6 +114,29 @@ const testRunnerStub: ToolHandler = async (input) => ({
   content: `test-runner is stubbed in this environment. Requested: ${JSON.stringify(input)}`,
 });
 
+const webSearch: ToolHandler = async (input, ctx) => {
+  const vetted = vetWebQuery(input.query);
+  if (!vetted.ok) {
+    return { content: `query rejected: ${vetted.reason}`, is_error: true };
+  }
+  const key = ctx.env.EXA_API_KEY;
+  if (!key) {
+    return {
+      content: "web_search unconfigured: set EXA_API_KEY",
+      is_error: true,
+    };
+  }
+  const n = bumpWebSearchCount(ctx.runId);
+  if (n === null) {
+    return {
+      content: `web_search cap ${WEB_SEARCH_MAX_PER_RUN} reached for this run`,
+      is_error: true,
+    };
+  }
+  const hits = await searchExa(vetted.query, key, fetch);
+  return { content: formatHits(vetted.query, hits) };
+};
+
 // ─── Registry ─────────────────────────────────────
 
 const REGISTRY: Record<string, ToolEntry> = {
@@ -170,6 +200,24 @@ const REGISTRY: Record<string, ToolEntry> = {
       },
     },
     handler: testRunnerStub,
+  },
+  web_search: {
+    definition: {
+      name: "web_search",
+      description:
+        "Search the public web via Exa. Use to find existing substitutes, docs, and prior art. Cap 8 queries per run.",
+      input_schema: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Search query (max 256 chars)",
+          },
+        },
+        required: ["query"],
+      },
+    },
+    handler: webSearch,
   },
 };
 
